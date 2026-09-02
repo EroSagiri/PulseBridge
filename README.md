@@ -14,13 +14,14 @@ Rust relay      ── replay window, device presence, metric bus
   │
   ├── WebSocket /ws   generic subscriber API
   ├── REST /api/...   point-in-time state
-  └── web dashboard   live BPM
+  ├── web dashboard   live BPM
+  └── local VRChat bridge ── OSC /chatbox/input ── avatar Chatbox
 ```
 
 **v1 scope is heart rate only.** The transport, the state store and the
 subscriber API are already metric-agnostic, so adding stress / HRV / pace later
-is a new `Metric` variant rather than a rewrite. Connect IQ, VRChat, FIT sync
-and stored history are all deliberately out.
+is a new `Metric` variant rather than a rewrite. The VRChat integration is kept
+as a separate local adapter; Connect IQ, FIT sync and stored history are out.
 
 ## Two sources, selectable at runtime
 
@@ -159,6 +160,25 @@ can mistake the last known value for the current one. `resting_hr` is `null`
 when the source does not report one, and unlike the live value it survives the
 device going quiet, because it describes the wearer rather than the link.
 
+## VRChat local bridge
+
+The VRChat adapter is an independent project in `vrchat-bridge/`. It consumes
+the same typed WebSocket contract as any other subscriber and sends OSC only to
+the local VRChat client. The relay server has no VRChat-specific dependency or
+behavior.
+
+```powershell
+# First enable OSC in VRChat: Action Menu → Options → OSC → Enabled
+cd vrchat-bridge
+cargo run --release
+```
+
+Defaults connect to `ws://127.0.0.1:8080/ws` and send to VRChat at
+`127.0.0.1:9000`. See [vrchat-bridge/README.md](vrchat-bridge/README.md) for
+remote-server, device-selection, custom text and refresh settings. For example,
+set `PB_VRCHAT_TEXT_FORMAT="{}BPM"` to display `72BPM`, or use `{:03}`
+instead of `{}` to keep the BPM field three characters wide with leading zeroes.
+
 ## Layout
 
 ```
@@ -167,6 +187,8 @@ server/src/protocol.rs    codec + replay window, with the spec test vector
 server/src/state.rs       device presence and the metric bus
 server/src/http.rs        WebSocket and REST subscribers
 server/src/bin/           simulator
+shared/pulsebridge-api/   typed subscriber contract shared by server and clients
+vrchat-bridge/            standalone WebSocket → local VRChat OSC adapter
 android/…/garmin/         Multi-Link framing and GATT client
 android/…/ble/            standard Heart Rate Service client
 android/…/service/        foreground service, source selection, UDP

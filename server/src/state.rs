@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use pulsebridge_api::{DeviceSnapshot, Metric, MetricEvent, Presence};
 use tokio::sync::broadcast;
 
 use crate::protocol::{Header, ReplayWindow, Telemetry};
@@ -17,48 +17,6 @@ pub fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Presence {
-    Online,
-    Stale,
-    Offline,
-}
-
-/// A single metric reading on the bus. Adding stress / HRV / pace later means
-/// adding variants here, not touching the transport or the subscribers.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "metric", rename_all = "snake_case")]
-pub enum Metric {
-    HeartRate { bpm: u8, contact_ok: bool },
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct MetricEvent {
-    pub device_id: u32,
-    pub timestamp_ms: u64,
-    #[serde(flatten)]
-    pub metric: Metric,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DeviceSnapshot {
-    pub device_id: u32,
-    pub presence: Presence,
-    /// Milliseconds since the last accepted packet.
-    pub age_ms: u64,
-    pub heart_rate: Option<u8>,
-    pub resting_hr: Option<u8>,
-    pub contact_ok: bool,
-    pub watch_connected: bool,
-    pub phone_battery_pct: Option<u8>,
-    pub session_id: u32,
-    pub packets: u64,
-    pub last_sequence: u32,
-    /// Sequence numbers we never saw, a rough packet-loss indicator.
-    pub gaps: u64,
 }
 
 struct Device {

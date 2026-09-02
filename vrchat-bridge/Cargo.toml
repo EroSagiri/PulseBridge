@@ -1,0 +1,18 @@
+[package]
+name = "pulsebridge-vrchat-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pulsebridge-vrchat-bridge"
+path = "src/main.rs"
+
+[dependencies]
+futures-util = "0.3"
+pulsebridge-api = { path = "../shared/pulsebridge-api" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

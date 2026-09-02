@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
+use pulsebridge_api::ServerMessage;
 use serde_json::json;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
@@ -46,8 +47,12 @@ async fn ws_session(mut socket: WebSocket, store: Arc<Store>) {
 
     // Send current state immediately so a fresh client is not blank until the
     // next heartbeat.
-    let hello = json!({ "type": "snapshot", "devices": store.snapshot_all() });
-    if socket.send(Message::Text(hello.to_string())).await.is_err() {
+    let hello = ServerMessage::Snapshot { devices: store.snapshot_all() };
+    if socket
+        .send(Message::Text(serde_json::to_string(&hello).unwrap()))
+        .await
+        .is_err()
+    {
         return;
     }
 
@@ -56,8 +61,12 @@ async fn ws_session(mut socket: WebSocket, store: Arc<Store>) {
         tokio::select! {
             event = rx.recv() => match event {
                 Ok(ev) => {
-                    let msg = json!({ "type": "metric", "event": ev });
-                    if socket.send(Message::Text(msg.to_string())).await.is_err() {
+                    let msg = ServerMessage::Metric { event: ev };
+                    if socket
+                        .send(Message::Text(serde_json::to_string(&msg).unwrap()))
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -69,8 +78,12 @@ async fn ws_session(mut socket: WebSocket, store: Arc<Store>) {
             // Presence decays with wall time, not with packets, so the client
             // needs a periodic snapshot to learn that a device went offline.
             _ = ticker.tick() => {
-                let msg = json!({ "type": "snapshot", "devices": store.snapshot_all() });
-                if socket.send(Message::Text(msg.to_string())).await.is_err() {
+                let msg = ServerMessage::Snapshot { devices: store.snapshot_all() };
+                if socket
+                    .send(Message::Text(serde_json::to_string(&msg).unwrap()))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }
