@@ -44,6 +44,10 @@ class BridgeService : LifecycleService() {
     @Volatile
     private var watchConnected = false
 
+    /** Set on the BLE callback thread, so freshness does not depend on the UI state having caught up. */
+    @Volatile
+    private var lastSampleAtMs = 0L
+
     /**
      * A stale reading is worse than no reading: if the watch stops delivering
      * notifications without dropping the link, the server must learn that the
@@ -101,11 +105,15 @@ class BridgeService : LifecycleService() {
             onSample = { hr, contact ->
                 lastHr = hr
                 contactOk = contact
+                lastSampleAtMs = System.currentTimeMillis()
                 pushSample()
             },
             onConnectionChange = { connected ->
                 watchConnected = connected
-                if (!connected) lastHr = null
+                if (!connected) {
+                    lastHr = null
+                    lastSampleAtMs = 0
+                }
                 pushSample()
             },
         ).also { it.start() }
@@ -124,9 +132,9 @@ class BridgeService : LifecycleService() {
     }
 
     private fun pushSample() {
-        val state = BridgeState.state.value
         val fresh = lastHr != null &&
-            System.currentTimeMillis() - state.lastSampleAtMs < staleAfterMs
+            lastSampleAtMs != 0L &&
+            System.currentTimeMillis() - lastSampleAtMs < staleAfterMs
         val hr = if (fresh) lastHr else null
 
         sender?.offer(
@@ -139,13 +147,12 @@ class BridgeService : LifecycleService() {
         )
 
         val client = hrClient
-        val newSampleArrived = client != null && client.samples != state.samples
         BridgeState.update {
             it.copy(
                 watchConnected = watchConnected,
                 heartRate = hr,
                 contactOk = contactOk,
-                lastSampleAtMs = if (newSampleArrived) System.currentTimeMillis() else it.lastSampleAtMs,
+                lastSampleAtMs = lastSampleAtMs,
                 samples = client?.samples ?: it.samples,
                 packetsSent = sender?.packetsSent ?: it.packetsSent,
                 reconnects = client?.reconnects ?: it.reconnects,
