@@ -63,6 +63,7 @@ fn main() -> std::io::Result<()> {
             flags: FLAG_HR_VALID | FLAG_CONTACT_OK | FLAG_WATCH_CONNECTED,
             heart_rate: hr.round().clamp(30.0, 220.0) as u8,
             battery_pct: 77,
+            resting_hr: 51,
         };
         let packet = encode_packet(&cipher, &header, &telemetry);
         socket.send_to(&packet, &target)?;

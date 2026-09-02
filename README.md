@@ -4,7 +4,8 @@ Real-time heart rate from a Garmin watch to anything that wants it.
 
 ```
 Garmin Forerunner 255
-  │  standard BLE Heart Rate Service (0x180D / 0x2A37)
+  │  Multi-Link REAL_TIME_HR   (default, alongside Garmin Connect)
+  │  or standard HRS 0x180D    (fallback, needs broadcast mode)
   ▼
 Android bridge  ── foreground service, auto-reconnect, send-on-change
   │  UDP + ChaCha20-Poly1305
@@ -18,23 +19,39 @@ Rust relay      ── replay window, device presence, metric bus
 
 **v1 scope is heart rate only.** The transport, the state store and the
 subscriber API are already metric-agnostic, so adding stress / HRV / pace later
-is a new `Metric` variant rather than a rewrite. Everything else from the
-original plan — Garmin private protocol, Connect IQ, VRChat, history — is
-deliberately out.
+is a new `Metric` variant rather than a rewrite. Connect IQ, VRChat, FIT sync
+and stored history are all deliberately out.
 
-## Why broadcast mode and not the Garmin private protocol
+## Two sources, selectable at runtime
 
-The watch is put into standard **Broadcast Heart Rate** mode, so it advertises
-the Bluetooth SIG Heart Rate Service like any chest strap does. That buys:
+### Multi-Link (default)
 
-* no reverse engineering, no Garmin Connect conflict, no Connect IQ app
-* ~150 lines of completely standard Android BLE code
-* the watch stays usable — nothing takes over the screen
-* the same Android code works unchanged with a chest strap or an armband,
-  which is the fallback if watch battery turns out to be unacceptable
+Garmin's private channel, measured rather than assumed — see
+[docs/phase0-multilink.md](docs/phase0-multilink.md). The bridge attaches a
+second GATT client to the link **Garmin Connect is already holding**, registers
+the `REAL_TIME_HR` service on an unclaimed lane, and 1 Hz heart rate starts
+flowing. No pairing, no authentication, no handshake to reverse engineer.
 
-The cost is that broadcast mode has to be switched on by hand on the watch and
-that it drains the battery noticeably. See [docs/battery-test.md](docs/battery-test.md).
+* nothing to switch on at the watch, and nothing to remember to switch off
+* Garmin Connect keeps running and was never observed to drop
+* carries resting heart rate as well as the live value
+* the same registration mechanism reaches HRV, stress, SpO2 and body battery,
+  all of which the FR255 advertises as supported
+
+Two constraints worth knowing. Handles are assigned **at registration time**, so
+the decoder dispatches on the handle the watch returned and never on a constant.
+And this only covers two apps on one phone — a second phone would need the watch
+to accept a second ACL connection, which is a different problem.
+
+### Broadcast (fallback)
+
+Standard Bluetooth SIG Heart Rate Service, which means the watch has to be put
+into **Broadcast Heart Rate** mode by hand and the battery cost is real. It is
+kept for two reasons: it is the escape hatch if Multi-Link ever stops working,
+and it is the same code path a chest strap or an optical armband would use, so
+switching to dedicated hardware needs no new code at all.
+
+Pick the source in the app. `MULTILINK` is the default.
 
 ## Quick start
 
@@ -82,15 +99,22 @@ cd android && ./gradlew assembleDebug
 `app/build/outputs/apk/debug/app-debug.apk`. Requires Android 9 (API 28) or
 newer; `ChaCha20-Poly1305` in `javax.crypto` is what sets that floor.
 
-In the app: paste the host, port and key, **Scan** while the watch is
-broadcasting, tap the watch in the list, then **Start**. Grant the battery
-optimisation exemption when it offers — without it the stream dies once the
-screen has been off for a while.
+In the app: paste the host, port and key, pick the source, choose the watch,
+then **Start**. Grant the battery optimisation exemption when it offers —
+without it the stream dies once the screen has been off for a while.
 
-### 5. On the watch
+* **Multi-Link** — press **List paired devices** and pick the watch. It is
+  already bonded, so there is nothing to scan for and nothing to do on the
+  watch itself.
+* **Broadcast** — turn on broadcast at the watch first (hold **UP** →
+  **Health & Wellness** → **Wrist Heart Rate** → **Broadcast Heart Rate** →
+  **START**), then press **Scan**.
 
-Hold **UP** → **Health & Wellness** → **Wrist Heart Rate** → **Broadcast Heart
-Rate** → **START**.
+The status card shows the Multi-Link registration state, so a lane conflict
+(`already in use`) or an authentication demand is visible instead of looking
+like a dead link. If lane 0 is taken, raise the lane number — but note that
+Garmin Connect was seen holding lane 1, and writing into its lane is the one
+thing that could disturb it.
 
 ## Subscriber API
 
@@ -107,7 +131,8 @@ On connect, and every 2 s afterwards:
 { "type": "snapshot",
   "devices": [ { "device_id": 1, "presence": "online", "age_ms": 340,
                  "heart_rate": 72, "contact_ok": true, "watch_connected": true,
-                 "phone_battery_pct": 77, "packets": 812, "gaps": 3 } ] }
+                 "resting_hr": 51, "phone_battery_pct": 77,
+                 "packets": 812, "gaps": 3 } ] }
 ```
 
 And on every change:
@@ -130,19 +155,30 @@ GET /api/device/:id
 
 `presence` is `online` under 15 s, `stale` under 60 s, `offline` beyond that.
 When a device is offline `heart_rate` is `null` — deliberately, so no consumer
-can mistake the last known value for the current one.
+can mistake the last known value for the current one. `resting_hr` is `null`
+when the source does not report one, and unlike the live value it survives the
+device going quiet, because it describes the wearer rather than the link.
 
 ## Layout
 
 ```
-protocol/protocol.md   the wire format; the only contract between the two sides
-server/src/protocol.rs codec + replay window, with the spec test vector
-server/src/state.rs    device presence and the metric bus
-server/src/http.rs     WebSocket and REST subscribers
-server/src/bin/        simulator
-android/               Kotlin bridge: pairing UI, BLE client, UDP sender
-docs/battery-test.md   the measurement that decides whether this is viable
+protocol/protocol.md      the wire format; the contract between the two sides
+server/src/protocol.rs    codec + replay window, with the spec test vector
+server/src/state.rs       device presence and the metric bus
+server/src/http.rs        WebSocket and REST subscribers
+server/src/bin/           simulator
+android/…/garmin/         Multi-Link framing and GATT client
+android/…/ble/            standard Heart Rate Service client
+android/…/service/        foreground service, source selection, UDP
+tools/mltest/             Phase 0 probe: dumps the GATT table, runs registration
+docs/phase0-multilink.md  the coexistence experiment and the raw captures
+docs/battery-test.md      the measurement still outstanding
 ```
+
+The Multi-Link frame formats are pinned by unit tests against the exact bytes
+captured from the watch (`android/app/src/test/…/MultiLinkTest.kt`), so a
+regression in the parser or a change on the watch fails the build rather than
+showing up as a silently wrong heart rate.
 
 ## Security notes
 
@@ -159,7 +195,19 @@ docs/battery-test.md   the measurement that decides whether this is viable
 
 ## Status
 
-Verified end to end with the simulator: UDP → server → WebSocket → dashboard,
-including presence decay to offline. The Android app builds; it has **not**
-been run against a real watch yet. That is the next step, together with the
-battery measurement.
+* Multi-Link coexistence with Garmin Connect: **proven on hardware**, see
+  docs/phase0-multilink.md. Registration and frame parsing are covered by unit
+  tests against the captured bytes.
+* Server pipeline: verified end to end with the simulator, UDP → WebSocket →
+  dashboard, including decay to offline.
+* The full Android app builds and its parsers pass, but the Multi-Link client
+  has **not yet been run inside the service against the watch** — only the
+  standalone probe has.
+
+Outstanding, in order of how much they can still sink this:
+
+1. Whether the stream survives screen-off and Doze on ColorOS for 24 h. This is
+   the biggest unknown now; the killer is the vendor power manager, not BLE.
+2. All-day battery cost of a Multi-Link subscription — unmeasured.
+3. Close-handle message format; the client currently just detaches.
+4. Whether lane 0 stays free after a watch reboot or a Connect firmware sync.

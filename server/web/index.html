@@ -58,6 +58,15 @@ const state = new Map();
 
 function presenceClass(p) { return p; }
 
+// Only the Multi-Link source reports a resting rate. When it is there, the
+// delta above resting says more about effort than the raw number does.
+function restingLabel(d) {
+  if (d.resting_hr == null) return '--';
+  if (d.heart_rate == null || d.presence === 'offline') return d.resting_hr + ' bpm';
+  const delta = d.heart_rate - d.resting_hr;
+  return d.resting_hr + ' bpm  (' + (delta >= 0 ? '+' : '') + delta + ')';
+}
+
 function render() {
   if (state.size === 0) {
     devicesEl.innerHTML = '<div id="empty">waiting for a device…</div>';
@@ -82,6 +91,7 @@ function render() {
         <div class="row"><span>updated</span><span>${(d.age_ms / 1000).toFixed(1)}s ago</span></div>
         <div class="row"><span>watch link</span><span>${d.watch_connected ? 'connected' : 'down'}</span></div>
         <div class="row"><span>contact</span><span>${d.contact_ok ? 'ok' : 'poor'}</span></div>
+        <div class="row"><span>resting</span><span>${restingLabel(d)}</span></div>
         <div class="row"><span>phone battery</span><span>${d.phone_battery_pct ?? '--'}%</span></div>
         <div class="row"><span>packets / gaps</span><span>${d.packets} / ${d.gaps}</span></div>
       </div>`;

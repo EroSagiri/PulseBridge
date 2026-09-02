@@ -2,6 +2,7 @@ package me.sagiri.pulsebridge
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -25,6 +26,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -77,6 +79,8 @@ private fun Screen(prefs: Prefs) {
     var watchName by remember { mutableStateOf(prefs.watchName ?: "") }
     var watchAddress by remember { mutableStateOf(prefs.watchAddress ?: "") }
     var autoStart by remember { mutableStateOf(prefs.autoStart) }
+    var sourceMode by remember { mutableStateOf(prefs.sourceMode) }
+    var lane by remember { mutableStateOf(prefs.laneIndex.toString()) }
     var scanning by remember { mutableStateOf(false) }
     val found = remember { mutableStateListOf<Pair<String, String>>() }
 
@@ -142,6 +146,8 @@ private fun Screen(prefs: Prefs) {
                 StatRow("packets sent", state.packetsSent.toString())
                 StatRow("ble reconnects", state.reconnects.toString())
                 StatRow("sensor contact", if (state.contactOk) "ok" else "poor")
+                state.restingHr?.let { StatRow("resting hr", "$it bpm") }
+                state.sourceStatus?.let { StatRow("source", it) }
                 state.lastError?.let { StatRow("last error", it) }
             }
         }
@@ -155,6 +161,8 @@ private fun Screen(prefs: Prefs) {
                     prefs.keyHex = keyHex
                     prefs.watchAddress = watchAddress
                     prefs.watchName = watchName
+                    prefs.sourceMode = sourceMode
+                    prefs.laneIndex = lane.toIntOrNull() ?: 0
                     scanner.stop()
                     scanning = false
                     BridgeService.start(context)
@@ -167,15 +175,53 @@ private fun Screen(prefs: Prefs) {
             ) { Text("Stop") }
         }
 
-        // ---- pairing -----------------------------------------------------
-        Text("Watch", fontWeight = FontWeight.SemiBold)
+        // ---- source ------------------------------------------------------
+        Text("Source", fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = sourceMode == SourceMode.MULTILINK,
+                onClick = { sourceMode = SourceMode.MULTILINK },
+                label = { Text("Multi-Link") },
+            )
+            FilterChip(
+                selected = sourceMode == SourceMode.BROADCAST,
+                onClick = { sourceMode = SourceMode.BROADCAST },
+                label = { Text("Broadcast") },
+            )
+        }
         Text(
-            "Turn on Broadcast Heart Rate on the watch first: " +
-                "hold UP, Health & Wellness, Wrist Heart Rate, Broadcast Heart Rate.",
+            when (sourceMode) {
+                SourceMode.MULTILINK ->
+                    "The private Garmin channel. Nothing to switch on at the watch, and " +
+                        "Garmin Connect keeps running. Also carries resting heart rate."
+
+                SourceMode.BROADCAST ->
+                    "Standard Heart Rate Service. Switch on Broadcast Heart Rate at the " +
+                        "watch first: hold UP, Health and Wellness, Wrist Heart Rate, " +
+                        "Broadcast Heart Rate."
+            },
             fontSize = 13.sp,
         )
+
+        if (sourceMode == SourceMode.MULTILINK) {
+            OutlinedTextField(
+                value = lane,
+                onValueChange = { lane = it.filter { c -> c.isDigit() }.take(1) },
+                label = { Text("Multi-Link lane") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "Lane 0 by default. Garmin Connect holds lane 1 on a Forerunner 255, so " +
+                    "only move off it if registration reports the lane is already in use.",
+                fontSize = 12.sp,
+            )
+        }
+
+        // ---- pairing -----------------------------------------------------
+        Text("Watch", fontWeight = FontWeight.SemiBold)
         if (watchAddress.isNotBlank()) {
-            Text("paired: $watchName  ($watchAddress)", fontSize = 13.sp)
+            Text("selected: $watchName  ($watchAddress)", fontSize = 13.sp)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = {
@@ -183,9 +229,25 @@ private fun Screen(prefs: Prefs) {
                     scanner.stop()
                     scanning = false
                 } else {
-                    permissionLauncher.launch(requiredPermissions())
+                    found.clear()
+                    // Multi-Link runs over the existing bond, so the watch is
+                    // already in the paired list and never advertises 0x180D
+                    // unless broadcast mode happens to be on as well.
+                    if (sourceMode == SourceMode.MULTILINK) {
+                        found.addAll(bondedDevices(context))
+                    } else {
+                        permissionLauncher.launch(requiredPermissions())
+                    }
                 }
-            }) { Text(if (scanning) "Stop scan" else "Scan") }
+            }) {
+                Text(
+                    when {
+                        scanning -> "Stop scan"
+                        sourceMode == SourceMode.MULTILINK -> "List paired devices"
+                        else -> "Scan"
+                    }
+                )
+            }
         }
         found.forEach { (address, name) ->
             OutlinedButton(
@@ -278,6 +340,14 @@ private fun StatRow(label: String, value: String) {
         Text(label, fontSize = 13.sp)
         Text(value, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
     }
+}
+
+@SuppressLint("MissingPermission")
+private fun bondedDevices(context: Context): List<Pair<String, String>> {
+    val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+    return adapter?.bondedDevices.orEmpty()
+        .map { it.address to (it.name ?: "(unnamed)") }
+        .sortedBy { it.second }
 }
 
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean {

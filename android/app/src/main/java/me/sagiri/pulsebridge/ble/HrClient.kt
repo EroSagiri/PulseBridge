@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import me.sagiri.pulsebridge.HeartRateSource
 
 /**
  * GATT client for the standard Heart Rate Service (0x180D / 0x2A37).
@@ -26,26 +27,26 @@ class HrClient(
     private val address: String,
     private val onSample: (hr: Int, contactOk: Boolean) -> Unit,
     private val onConnectionChange: (connected: Boolean) -> Unit,
-) {
+) : HeartRateSource {
     private val handler = Handler(Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
     private var stopped = false
     private var backoffMs = MIN_BACKOFF_MS
 
     @Volatile
-    var reconnects: Int = 0
+    override var reconnects: Int = 0
         private set
 
     @Volatile
-    var samples: Long = 0
+    override var samples: Long = 0
         private set
 
-    fun start() {
+    override fun start() {
         stopped = false
         connect()
     }
 
-    fun stop() {
+    override fun stop() {
         stopped = true
         handler.removeCallbacksAndMessages(null)
         gatt?.disconnect()

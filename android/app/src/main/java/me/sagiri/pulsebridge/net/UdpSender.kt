@@ -45,6 +45,8 @@ class UdpSender(
         val contactOk: Boolean,
         val watchConnected: Boolean,
         val batteryPct: Int,
+        /** Only Multi-Link supplies this; 0 means unknown. */
+        val restingHr: Int,
     )
 
     fun start() {
@@ -95,6 +97,7 @@ class UdpSender(
                 flags = flags,
                 heartRate = sample.heartRate ?: 0,
                 batteryPct = sample.batteryPct,
+                restingHr = sample.restingHr,
             )
             sock.send(DatagramPacket(bytes, bytes.size, addr, port))
             packetsSent += 1

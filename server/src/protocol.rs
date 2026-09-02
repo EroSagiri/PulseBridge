@@ -30,6 +30,8 @@ pub struct Telemetry {
     pub flags: u8,
     pub heart_rate: u8,
     pub battery_pct: u8,
+    /// 0 means the source does not report one; only Multi-Link does.
+    pub resting_hr: u8,
 }
 
 impl Telemetry {
@@ -87,7 +89,7 @@ pub fn parse_header(buf: &[u8]) -> Result<Header, DecodeError> {
 /// Build a complete wire packet. Used by the simulator and by the protocol tests.
 pub fn encode_packet(cipher: &Cipher, h: &Header, t: &Telemetry) -> Vec<u8> {
     let header = encode_header(h);
-    let payload = [t.flags, t.heart_rate, t.battery_pct, 0u8];
+    let payload = [t.flags, t.heart_rate, t.battery_pct, t.resting_hr];
     let nonce = crate::crypto::nonce_for(h.device_id, h.session_id, h.sequence);
     let sealed = cipher.seal(&nonce, &header, &payload);
     let mut out = Vec::with_capacity(HEADER_LEN + sealed.len());
@@ -114,6 +116,7 @@ pub fn decode_packet(cipher: &Cipher, buf: &[u8]) -> Result<(Header, Telemetry),
             flags: plain[0],
             heart_rate: plain[1],
             battery_pct: plain[2],
+            resting_hr: plain[3],
         },
     ))
 }
@@ -179,7 +182,7 @@ mod tests {
             sequence: 1,
             timestamp_ms: 1_700_000_000_000,
         };
-        let t = Telemetry { flags: 0x07, heart_rate: 72, battery_pct: 85 };
+        let t = Telemetry { flags: 0x07, heart_rate: 72, battery_pct: 85, resting_hr: 51 };
 
         let pkt = encode_packet(&test_cipher(), &h, &t);
         assert_eq!(pkt.len(), PACKET_LEN);
@@ -200,7 +203,7 @@ mod tests {
             sequence: 3,
             timestamp_ms: 1_700_000_000_000,
         };
-        let t = Telemetry { flags: 0x07, heart_rate: 72, battery_pct: 85 };
+        let t = Telemetry { flags: 0x07, heart_rate: 72, battery_pct: 85, resting_hr: 51 };
         let mut pkt = encode_packet(&test_cipher(), &h, &t);
         pkt[16] ^= 0xff; // flip a timestamp byte, which is AAD
         assert!(matches!(
@@ -218,7 +221,7 @@ mod tests {
             sequence: 3,
             timestamp_ms: 1_700_000_000_000,
         };
-        let t = Telemetry { flags: 1, heart_rate: 100, battery_pct: 50 };
+        let t = Telemetry { flags: 1, heart_rate: 100, battery_pct: 50, resting_hr: 0 };
         let pkt = encode_packet(&test_cipher(), &h, &t);
         let other = Cipher::new(&[0xaa; 32]);
         assert!(matches!(

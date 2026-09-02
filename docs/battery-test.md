@@ -1,68 +1,85 @@
-# Broadcast mode battery measurement
+# Battery and background-survival measurement
 
-The whole approach lives or dies on this number, and the only published figures
-are from a Forerunner 230/235 — a 2015 watch with an older Bluetooth radio and
-a smaller battery. Those measured roughly **2–3 %/hour** (22–24 % across an
-8–12 hour night). The FR255 baseline is 14 days in smartwatch mode, about
-**0.3 %/hour**, so broadcast would be 5–10× normal drain.
+Phase 0 settled the protocol question — Multi-Link works and coexists with
+Garmin Connect. What it did not touch is whether an all-day subscription is
+affordable, and whether ColorOS lets the bridge live through a night. Those are
+now the two things that can still sink this.
 
-Do not design around the old number. Measure the actual watch.
+**Test C is the more urgent one.** A stream that dies at 02:00 because the
+vendor power manager killed the service is a worse failure than one that costs
+2 %/hour, and it is also the more likely one.
 
-## Test A — the number that decides everything
+## Test C — does the phone survive the night
 
-1. Charge to 100 %, wait until the reading settles.
-2. Note watch battery % and the clock time.
-3. Turn on Broadcast HR, start the app, confirm the dashboard is live.
-4. Go about a normal sedentary two hours. No activity recording, no GPS.
+Leave the app streaming overnight, screen off, phone not on charge.
+
+In the morning record: phone battery delta, app **uptime**, **ble reconnects**,
+**samples**, and whether the dashboard shows an unbroken stream.
+
+| observation | reading |
+|---|---|
+| uptime matches wall clock, reconnects low | the service survived; done |
+| uptime reset | the service was killed and restarted |
+| uptime fine, samples far below uptime seconds | link suspended while asleep |
+| reconnects in the dozens | link churning, probably the power manager |
+
+`samples` should be close to `uptime` in seconds, since the watch streams at
+roughly 1 Hz. A large gap is the tell that something throttled the link without
+tearing it down.
+
+If it fails, in order: battery optimisation exemption, then ColorOS **App
+battery usage → Allow background activity** plus locking the app in recents,
+then the vendor auto-start list. Note which one fixed it — that is the
+instruction the app should surface.
+
+## Test A — cost of an all-day Multi-Link subscription
+
+1. Charge the watch to 100 %, let the reading settle.
+2. Note watch battery % and clock time.
+3. Start the bridge on Multi-Link. Confirm the dashboard is live.
+4. Two sedentary hours. No activity recording, no GPS.
 5. Note watch battery % and time again.
 
 `drain_per_hour = (start − end) / hours`
 
-Read the app's **uptime**, **samples from watch** and **ble reconnects** at the
-end. If samples is far below `uptime_seconds`, the link was dropping and the
-drain figure is not comparable.
-
-## How to read the result
-
 | measured | verdict |
 |---|---|
-| ≤ 1.5 %/h | All-day broadcast is fine. Ship it as-is. |
-| 1.5–2.5 %/h | ~16 h/day costs 24–40 %. Viable if you charge daily. |
-| > 2.5 %/h | On-demand only, or move all-day duty to a chest strap. |
+| ≤ 1.5 %/h | all-day is fine, ship it |
+| 1.5–2.5 %/h | ~16 h/day costs 24–40 %; viable if you charge daily |
+| > 2.5 %/h | on-demand only, or move all-day duty to a chest strap |
+
+The FR255 baseline is 14 days in smartwatch mode, about **0.3 %/h**.
 
 ## Test B — baseline control
 
-Same two hours, same day if possible, with broadcast **off** and the app
-stopped. This is what the watch costs you anyway. Subtract it: the difference
-is the true price of the bridge, and it is the only fair comparison.
+The same two hours, ideally the same day, with the bridge stopped. This is what
+the watch costs you anyway; subtract it, and the difference is the true price of
+the bridge.
 
-Skipping this test is the most common way to over-attribute drain to
-broadcasting.
+Skipping this is the most common way to over-attribute drain to the bridge.
 
-## Test C — does the phone survive the night
+## Test D — Multi-Link versus broadcast
 
-Separate question, separate run. Leave the app streaming overnight with the
-screen off.
+Only worth running once A and C pass. Same two-hour protocol with the source
+switched to `BROADCAST`.
 
-Record in the morning: phone battery delta, app uptime, `ble reconnects`, and
-whether the dashboard shows an unbroken stream.
-
-What this is really testing is Doze and the OEM power manager, not Bluetooth.
-If uptime resets or reconnects climb into the dozens, the foreground service
-was killed — check the battery optimisation exemption first, then whatever
-extra allow-list the phone vendor ships.
+The interesting question is whether Multi-Link is *cheaper* than broadcast.
+Broadcast forces continuous 1 Hz optical sampling plus a dedicated advertising
+mode; Multi-Link rides a connection the watch is already maintaining for Garmin
+Connect, so it may well cost less. Nobody has measured this.
 
 ## Log
 
-| date | test | start % | end % | hours | %/h | reconnects | notes |
-|------|------|---------|-------|-------|-----|------------|-------|
-|      | A    |         |       |       |     |            |       |
-|      | B    |         |       |       |     |            |       |
-|      | C    |         |       |       |     |            |       |
+| date | test | source | start % | end % | hours | %/h | reconnects | notes |
+|------|------|--------|---------|-------|-------|-----|------------|-------|
+|      | C    | ML     |         |       |       |     |            |       |
+|      | A    | ML     |         |       |       |     |            |       |
+|      | B    | none   |         |       |       |     |            |       |
+|      | D    | BC     |         |       |       |     |            |       |
 
 ## If the answer is "too expensive"
 
-The Android side is a plain Heart Rate Service client, so a chest strap or an
-optical armband pairs with **exactly the same code and no changes** — a coin
+The broadcast path is a plain Heart Rate Service client, so a chest strap or an
+optical armband works with **exactly the same code and no changes** — a coin
 cell runs one for months at 1 Hz because that hardware is built for it. The
-watch then goes back to what it is good at, and the bridge keeps working.
+watch then keeps doing what it is good at, and the bridge keeps working.

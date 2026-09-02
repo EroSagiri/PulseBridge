@@ -39,6 +39,7 @@ object PacketCodec {
         flags: Int,
         heartRate: Int,
         batteryPct: Int,
+        restingHr: Int,
     ): ByteArray {
         val header = ByteBuffer.allocate(HEADER_LEN).order(ByteOrder.LITTLE_ENDIAN).apply {
             // Magic is the one big-endian field, so it reads as "PB" in a dump.
@@ -56,7 +57,7 @@ object PacketCodec {
             flags.toByte(),
             heartRate.coerceIn(0, 255).toByte(),
             batteryPct.coerceIn(0, 255).toByte(),
-            0,
+            restingHr.coerceIn(0, 255).toByte(),
         )
 
         val nonce = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN).apply {

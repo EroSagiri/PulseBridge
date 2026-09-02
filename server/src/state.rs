@@ -50,6 +50,7 @@ pub struct DeviceSnapshot {
     /// Milliseconds since the last accepted packet.
     pub age_ms: u64,
     pub heart_rate: Option<u8>,
+    pub resting_hr: Option<u8>,
     pub contact_ok: bool,
     pub watch_connected: bool,
     pub phone_battery_pct: Option<u8>,
@@ -67,6 +68,7 @@ struct Device {
     last_seen_ms: u64,
     last_sender_ts_ms: u64,
     heart_rate: Option<u8>,
+    resting_hr: Option<u8>,
     contact_ok: bool,
     watch_connected: bool,
     phone_battery_pct: Option<u8>,
@@ -92,6 +94,9 @@ impl Device {
             // A device that has gone quiet must not keep reporting its last
             // reading as if it were current.
             heart_rate: if presence == Presence::Offline { None } else { self.heart_rate },
+            // Resting rate is a property of the wearer, not of the live link,
+            // so it survives the device going quiet.
+            resting_hr: self.resting_hr,
             contact_ok: self.contact_ok,
             watch_connected: self.watch_connected && presence != Presence::Offline,
             phone_battery_pct: self.phone_battery_pct,
@@ -139,6 +144,7 @@ impl Store {
             last_seen_ms: 0,
             last_sender_ts_ms: 0,
             heart_rate: None,
+            resting_hr: None,
             contact_ok: false,
             watch_connected: false,
             phone_battery_pct: None,
@@ -177,6 +183,9 @@ impl Store {
         dev.contact_ok = t.contact_ok();
         dev.watch_connected = t.watch_connected();
         dev.phone_battery_pct = if t.battery_pct == 0xFF { None } else { Some(t.battery_pct) };
+        if t.resting_hr != 0 {
+            dev.resting_hr = Some(t.resting_hr);
+        }
 
         let previous = dev.heart_rate;
         let new_hr = if t.hr_valid() { Some(t.heart_rate) } else { None };

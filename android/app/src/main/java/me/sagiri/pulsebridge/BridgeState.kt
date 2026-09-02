@@ -14,6 +14,7 @@ object BridgeState {
         val running: Boolean = false,
         val watchConnected: Boolean = false,
         val heartRate: Int? = null,
+        val restingHr: Int? = null,
         val contactOk: Boolean = false,
         val lastSampleAtMs: Long = 0,
         val startedAtMs: Long = 0,
@@ -21,6 +22,8 @@ object BridgeState {
         val packetsSent: Long = 0,
         val reconnects: Int = 0,
         val lastError: String? = null,
+        /** Free-text detail from the source, e.g. Multi-Link registration state. */
+        val sourceStatus: String? = null,
     ) {
         val uptimeMs: Long
             get() = if (startedAtMs == 0L) 0 else System.currentTimeMillis() - startedAtMs

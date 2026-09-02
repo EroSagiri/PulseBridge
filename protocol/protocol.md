@@ -53,8 +53,13 @@ offset size field       notes
                         bit3 heartbeat        (no change, keepalive)
      1    1 heart_rate  bpm, 0 when hr_valid = 0
      2    1 battery_pct phone battery 0..100, 0xFF = unknown
-     3    1 reserved    0
+     3    1 resting_hr  bpm, 0 = unknown
 ```
+
+`resting_hr` occupies what v1 originally reserved. A sender that does not know
+it writes 0, which is what the reserved byte already carried, so the two are
+wire-compatible and the version stays 1. Only the Garmin Multi-Link source
+supplies it; the standard Heart Rate Service does not carry resting rate.
 
 `heart_rate` is `u8`: the BLE Heart Rate Measurement characteristic may report
 16-bit values, but any value > 255 bpm is clamped and `hr_valid` cleared.
@@ -103,7 +108,7 @@ device_id  = 0x00000001
 session_id = 0x11223344
 sequence   = 0x00000001
 timestamp  = 1700000000000  (0x18BCFE56800)
-payload    = flags 0x07, hr 72, battery 85, reserved 0
+payload    = flags 0x07, hr 72, battery 85, resting_hr 51
 ```
 
 `server/src/protocol.rs` contains this as a unit test; keep the Kotlin encoder

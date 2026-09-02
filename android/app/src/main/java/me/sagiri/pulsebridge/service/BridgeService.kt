@@ -17,9 +17,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.sagiri.pulsebridge.BridgeState
+import me.sagiri.pulsebridge.HeartRateSource
 import me.sagiri.pulsebridge.MainActivity
 import me.sagiri.pulsebridge.Prefs
+import me.sagiri.pulsebridge.SourceMode
 import me.sagiri.pulsebridge.ble.HrClient
+import me.sagiri.pulsebridge.garmin.MultiLinkClient
 import me.sagiri.pulsebridge.net.PacketCodec
 import me.sagiri.pulsebridge.net.UdpSender
 
@@ -31,12 +34,15 @@ import me.sagiri.pulsebridge.net.UdpSender
 class BridgeService : LifecycleService() {
 
     private lateinit var prefs: Prefs
-    private var hrClient: HrClient? = null
+    private var source: HeartRateSource? = null
     private var sender: UdpSender? = null
     private var refreshJob: Job? = null
 
     @Volatile
     private var lastHr: Int? = null
+
+    @Volatile
+    private var restingHr: Int? = null
 
     @Volatile
     private var contactOk = false
@@ -75,7 +81,7 @@ class BridgeService : LifecycleService() {
             return START_NOT_STICKY
         }
 
-        if (hrClient != null) return START_STICKY
+        if (source != null) return START_STICKY
 
         val address = prefs.watchAddress
         val host = prefs.serverHost
@@ -99,24 +105,7 @@ class BridgeService : LifecycleService() {
             scope = lifecycleScope,
         ).also { it.start() }
 
-        hrClient = HrClient(
-            context = this,
-            address = address,
-            onSample = { hr, contact ->
-                lastHr = hr
-                contactOk = contact
-                lastSampleAtMs = System.currentTimeMillis()
-                pushSample()
-            },
-            onConnectionChange = { connected ->
-                watchConnected = connected
-                if (!connected) {
-                    lastHr = null
-                    lastSampleAtMs = 0
-                }
-                pushSample()
-            },
-        ).also { it.start() }
+        source = createSource(address).also { it.start() }
 
         // Drives the heartbeat path and the staleness check even when the watch
         // has gone completely silent.
@@ -131,6 +120,48 @@ class BridgeService : LifecycleService() {
         return START_STICKY
     }
 
+    private fun createSource(address: String): HeartRateSource = when (prefs.sourceMode) {
+        SourceMode.MULTILINK -> MultiLinkClient(
+            context = this,
+            address = address,
+            laneIndex = prefs.laneIndex,
+            onSample = { hr, resting ->
+                if (resting != null) restingHr = resting
+                acceptSample(hr, contactOk = true)
+            },
+            onConnectionChange = ::acceptConnectionChange,
+            onStatus = { status ->
+                BridgeState.update { it.copy(sourceStatus = status) }
+            },
+        )
+
+        SourceMode.BROADCAST -> HrClient(
+            context = this,
+            address = address,
+            // The standard Heart Rate Service carries no resting rate, so
+            // whatever Multi-Link last reported is left to expire rather than
+            // being presented as current.
+            onSample = { hr, contact -> acceptSample(hr, contact) },
+            onConnectionChange = ::acceptConnectionChange,
+        )
+    }
+
+    private fun acceptSample(hr: Int, contactOk: Boolean) {
+        lastHr = hr
+        this.contactOk = contactOk
+        lastSampleAtMs = System.currentTimeMillis()
+        pushSample()
+    }
+
+    private fun acceptConnectionChange(connected: Boolean) {
+        watchConnected = connected
+        if (!connected) {
+            lastHr = null
+            lastSampleAtMs = 0
+        }
+        pushSample()
+    }
+
     private fun pushSample() {
         val fresh = lastHr != null &&
             lastSampleAtMs != 0L &&
@@ -143,14 +174,16 @@ class BridgeService : LifecycleService() {
                 contactOk = contactOk,
                 watchConnected = watchConnected,
                 batteryPct = batteryPct(),
+                restingHr = restingHr ?: 0,
             )
         )
 
-        val client = hrClient
+        val client = source
         BridgeState.update {
             it.copy(
                 watchConnected = watchConnected,
                 heartRate = hr,
+                restingHr = restingHr,
                 contactOk = contactOk,
                 lastSampleAtMs = lastSampleAtMs,
                 samples = client?.samples ?: it.samples,
@@ -171,8 +204,9 @@ class BridgeService : LifecycleService() {
     private fun stopEverything() {
         refreshJob?.cancel()
         refreshJob = null
-        hrClient?.stop()
-        hrClient = null
+        source?.stop()
+        source = null
+        restingHr = null
         sender?.stop()
         sender = null
         runCatching { unregisterReceiver(screenReceiver) }

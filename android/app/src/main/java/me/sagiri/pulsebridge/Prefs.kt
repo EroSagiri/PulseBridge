@@ -42,6 +42,20 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_WATCH_NAME, null)
         set(v) = sp.edit().putString(KEY_WATCH_NAME, v).apply()
 
+    /** Which feed to use. Multi-Link is the default now that it is proven. */
+    var sourceMode: SourceMode
+        get() = SourceMode.from(sp.getString(KEY_SOURCE, null))
+        set(v) = sp.edit().putString(KEY_SOURCE, v.name).apply()
+
+    /**
+     * Multi-Link lane to claim. Garmin Connect was observed holding lane 1 on a
+     * Forerunner 255, so lane 0 is the default and moving off it is manual --
+     * writing into Connect's lane is the one action that could disturb it.
+     */
+    var laneIndex: Int
+        get() = sp.getInt(KEY_LANE, 0)
+        set(v) = sp.edit().putInt(KEY_LANE, v).apply()
+
     /** Whether the service should come back up after a reboot. */
     var autoStart: Boolean
         get() = sp.getBoolean(KEY_AUTOSTART, false)
@@ -58,5 +72,7 @@ class Prefs(context: Context) {
         private const val KEY_WATCH_ADDR = "watch_addr"
         private const val KEY_WATCH_NAME = "watch_name"
         private const val KEY_AUTOSTART = "auto_start"
+        private const val KEY_SOURCE = "source_mode"
+        private const val KEY_LANE = "lane_index"
     }
 }
