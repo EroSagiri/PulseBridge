@@ -11,6 +11,8 @@ import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
+import android.os.SystemClock
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Job
@@ -37,6 +39,11 @@ class BridgeService : LifecycleService() {
     private var source: HeartRateSource? = null
     private var sender: UdpSender? = null
     private var refreshJob: Job? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private val streamWatchdog = StreamWatchdog(
+        stallAfterMs = STREAM_STALL_AFTER_MS,
+        recoveryCooldownMs = STREAM_RECOVERY_COOLDOWN_MS,
+    )
 
     @Volatile
     private var lastHr: Int? = null
@@ -92,6 +99,7 @@ class BridgeService : LifecycleService() {
         }
 
         startForeground(NOTIFICATION_ID, buildNotification("starting", null))
+        acquireWakeLock()
 
         BridgeState.update {
             it.copy(running = true, startedAtMs = System.currentTimeMillis())
@@ -113,6 +121,7 @@ class BridgeService : LifecycleService() {
             while (true) {
                 delay(1_000)
                 pushSample()
+                recoverSilentStreamIfNeeded()
             }
         }
 
@@ -150,11 +159,13 @@ class BridgeService : LifecycleService() {
         lastHr = hr
         this.contactOk = contactOk
         lastSampleAtMs = System.currentTimeMillis()
+        streamWatchdog.onSample(SystemClock.elapsedRealtime())
         pushSample()
     }
 
     private fun acceptConnectionChange(connected: Boolean) {
         watchConnected = connected
+        streamWatchdog.onConnectionChanged(connected, SystemClock.elapsedRealtime())
         if (!connected) {
             lastHr = null
             lastSampleAtMs = 0
@@ -195,6 +206,13 @@ class BridgeService : LifecycleService() {
         updateNotification(hr)
     }
 
+    private fun recoverSilentStreamIfNeeded() {
+        if (!streamWatchdog.shouldRecover(SystemClock.elapsedRealtime())) return
+        lastHr = null
+        lastSampleAtMs = 0L
+        source?.reconnect("no heart-rate notification for ${STREAM_STALL_AFTER_MS / 1_000}s")
+    }
+
     private fun batteryPct(): Int {
         val bm = getSystemService(Context.BATTERY_SERVICE) as? BatteryManager ?: return 0xFF
         val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
@@ -209,6 +227,7 @@ class BridgeService : LifecycleService() {
         restingHr = null
         sender?.stop()
         sender = null
+        releaseWakeLock()
         runCatching { unregisterReceiver(screenReceiver) }
         BridgeState.reset()
     }
@@ -218,11 +237,30 @@ class BridgeService : LifecycleService() {
         super.onDestroy()
     }
 
-    // Some OEM builds suspend BLE callbacks while the screen is off and only
-    // resume on wake; nudging the state machine here surfaces that as a
-    // reconnect instead of a silent stall.
+    // Poll immediately on wake instead of waiting for the next one-second tick.
+    // The same watchdog also runs while the screen remains off.
     private val screenReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) = pushSample()
+        override fun onReceive(context: Context?, intent: Intent?) {
+            pushSample()
+            recoverSilentStreamIfNeeded()
+        }
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = power.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "$packageName:BridgeService",
+        ).apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
     }
 
     private fun createChannel() {
@@ -262,12 +300,19 @@ class BridgeService : LifecycleService() {
     }
 
     private var lastNotifiedHr: Int? = -1
+    private var lastNotificationAtMs = 0L
+    private var lastNotificationState: Pair<Boolean, Boolean>? = null
 
     private fun updateNotification(hr: Int?) {
-        // Rewriting the notification at 1 Hz is a measurable battery cost of
-        // its own, so only touch it when the displayed value actually changes.
-        if (hr == lastNotifiedHr) return
+        val now = SystemClock.elapsedRealtime()
+        val state = watchConnected to (hr != null)
+        val stateChanged = state != lastNotificationState
+        val valueChangedAndDue = hr != lastNotifiedHr &&
+            now - lastNotificationAtMs >= NOTIFICATION_MIN_INTERVAL_MS
+        if (!stateChanged && !valueChangedAndDue) return
         lastNotifiedHr = hr
+        lastNotificationAtMs = now
+        lastNotificationState = state
         val status = when {
             !watchConnected -> "watch disconnected"
             hr == null -> "connected, waiting for data"
@@ -281,6 +326,9 @@ class BridgeService : LifecycleService() {
         const val ACTION_STOP = "me.sagiri.pulsebridge.STOP"
         private const val CHANNEL_ID = "bridge"
         private const val NOTIFICATION_ID = 1
+        private const val STREAM_STALL_AFTER_MS = 30_000L
+        private const val STREAM_RECOVERY_COOLDOWN_MS = 30_000L
+        private const val NOTIFICATION_MIN_INTERVAL_MS = 10_000L
 
         fun start(context: Context) {
             val intent = Intent(context, BridgeService::class.java)

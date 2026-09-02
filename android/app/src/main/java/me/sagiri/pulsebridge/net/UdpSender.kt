@@ -1,12 +1,16 @@
 package me.sagiri.pulsebridge.net
 
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -31,9 +35,10 @@ class UdpSender(
     private var socket: DatagramSocket? = null
     private var address: InetAddress? = null
     private var job: Job? = null
+    private val updates = Channel<Sample>(Channel.CONFLATED)
+    private var openBackoffMs = MIN_OPEN_BACKOFF_MS
 
-    @Volatile private var pending: Sample? = null
-    @Volatile private var lastSentAtMs: Long = 0
+    @Volatile private var lastSentAtElapsedMs: Long = 0
     @Volatile private var lastSentHr: Int = -1
     @Volatile private var lastSentFlags: Int = -1
 
@@ -52,42 +57,43 @@ class UdpSender(
     fun start() {
         if (job != null) return
         job = scope.launch(Dispatchers.IO) {
-            try {
-                socket = DatagramSocket()
-                // Resolution happens once here rather than per packet; a server
-                // IP change is handled by restarting the service.
-                address = InetAddress.getByName(host)
-            } catch (e: Exception) {
-                lastError = "resolve/bind failed: ${e.message}"
-                Log.w(TAG, "cannot open socket", e)
-                return@launch
-            }
-            while (true) {
-                val sample = pending
-                if (sample != null) {
-                    val flags = flagsOf(sample, heartbeat = false)
-                    val changed = sample.heartRate != lastSentHr || flags != lastSentFlags
-                    val due = System.currentTimeMillis() - lastSentAtMs >= HEARTBEAT_MS
-                    if (changed || due) {
-                        send(sample, heartbeat = !changed)
-                    }
+            var latest: Sample? = null
+            while (currentCoroutineContext().isActive) {
+                val waitMs = latest?.let {
+                    (HEARTBEAT_MS - (SystemClock.elapsedRealtime() - lastSentAtElapsedMs))
+                        .coerceAtLeast(0L)
                 }
-                delay(TICK_MS)
+                val incoming = when {
+                    latest == null -> updates.receive()
+                    waitMs != null && waitMs > 0L -> withTimeoutOrNull(waitMs) { updates.receive() }
+                    else -> null
+                }
+                if (incoming != null) latest = incoming
+
+                val sample = latest ?: continue
+                val flags = flagsOf(sample, heartbeat = false)
+                val changed = sample.heartRate != lastSentHr || flags != lastSentFlags
+                val due = lastSentAtElapsedMs == 0L ||
+                    SystemClock.elapsedRealtime() - lastSentAtElapsedMs >= HEARTBEAT_MS
+                if ((changed || due) && !send(sample, heartbeat = !changed)) {
+                    delay(openBackoffMs)
+                }
             }
         }
     }
 
-    /** Called from the BLE callback thread; the send loop picks it up. */
+    /** Called from the BLE callback thread; the conflated channel keeps only the newest value. */
     fun offer(sample: Sample) {
-        pending = sample
+        updates.trySend(sample)
     }
 
-    private suspend fun send(sample: Sample, heartbeat: Boolean) = withContext(Dispatchers.IO) {
-        val sock = socket ?: return@withContext
-        val addr = address ?: return@withContext
+    private fun send(sample: Sample, heartbeat: Boolean): Boolean {
+        if (!ensureSocket()) return false
+        val sock = socket ?: return false
+        val addr = address ?: return false
         sequence += 1
         val flags = flagsOf(sample, heartbeat)
-        try {
+        return try {
             val bytes = PacketCodec.encode(
                 key = key,
                 deviceId = deviceId,
@@ -101,16 +107,44 @@ class UdpSender(
             )
             sock.send(DatagramPacket(bytes, bytes.size, addr, port))
             packetsSent += 1
-            lastSentAtMs = System.currentTimeMillis()
+            lastSentAtElapsedMs = SystemClock.elapsedRealtime()
             lastSentHr = sample.heartRate ?: -1
-            lastSentFlags = flags
+            // HEARTBEAT describes this packet, not the underlying sample. Do
+            // not let it make the same sample look changed on the next loop.
+            lastSentFlags = flagsOf(sample, heartbeat = false)
             lastError = null
+            openBackoffMs = MIN_OPEN_BACKOFF_MS
+            true
         } catch (e: Exception) {
-            // A send failure on a mobile network is routine (handover, doze
-            // wakeup race). Record it and let the next tick try again.
-            lastError = e.message
+            lastError = "send failed: ${e.message}"
             Log.d(TAG, "send failed", e)
+            closeSocket()
+            openBackoffMs = (openBackoffMs * 2).coerceAtMost(MAX_OPEN_BACKOFF_MS)
+            false
         }
+    }
+
+    private fun ensureSocket(): Boolean {
+        if (socket != null && address != null) return true
+        return try {
+            val resolved = InetAddress.getByName(host)
+            val opened = DatagramSocket()
+            address = resolved
+            socket = opened
+            true
+        } catch (e: Exception) {
+            lastError = "resolve/bind failed: ${e.message}"
+            Log.w(TAG, "cannot open socket", e)
+            closeSocket()
+            openBackoffMs = (openBackoffMs * 2).coerceAtMost(MAX_OPEN_BACKOFF_MS)
+            false
+        }
+    }
+
+    private fun closeSocket() {
+        socket?.close()
+        socket = null
+        address = null
     }
 
     private fun flagsOf(s: Sample, heartbeat: Boolean): Int {
@@ -125,14 +159,14 @@ class UdpSender(
     fun stop() {
         job?.cancel()
         job = null
-        socket?.close()
-        socket = null
+        closeSocket()
     }
 
     companion object {
         private const val TAG = "UdpSender"
         /** Keeps carrier NAT bindings alive; they can expire at 15-30 s. */
         const val HEARTBEAT_MS = 10_000L
-        private const val TICK_MS = 250L
+        private const val MIN_OPEN_BACKOFF_MS = 1_000L
+        private const val MAX_OPEN_BACKOFF_MS = 60_000L
     }
 }

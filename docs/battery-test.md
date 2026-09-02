@@ -9,6 +9,11 @@ now the two things that can still sink this.
 vendor power manager killed the service is a worse failure than one that costs
 2 %/hour, and it is also the more likely one.
 
+The bridge now holds a partial CPU wake lock for the lifetime of the foreground
+service and reconnects if a connected GATT client produces no heart-rate sample
+for 30 seconds. Test C must verify both survival and the resulting phone battery
+cost; a foreground-service notification by itself does not keep the CPU awake.
+
 ## Test C — does the phone survive the night
 
 Leave the app streaming overnight, screen off, phone not on charge.

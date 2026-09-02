@@ -32,6 +32,7 @@ class HrClient(
     private var gatt: BluetoothGatt? = null
     private var stopped = false
     private var backoffMs = MIN_BACKOFF_MS
+    private var reconnectRunnable: Runnable? = null
 
     @Volatile
     override var reconnects: Int = 0
@@ -48,70 +49,60 @@ class HrClient(
 
     override fun stop() {
         stopped = true
-        handler.removeCallbacksAndMessages(null)
-        gatt?.disconnect()
-        gatt?.close()
-        gatt = null
+        reconnectRunnable?.let(handler::removeCallbacks)
+        reconnectRunnable = null
+        closeCurrentGatt()
+    }
+
+    override fun reconnect(reason: String) {
+        handler.post {
+            if (stopped) return@post
+            Log.w(TAG, "forcing reconnect: $reason")
+            onConnectionChange(false)
+            closeCurrentGatt()
+            scheduleReconnect(reason, delayMs = 0L)
+        }
     }
 
     private fun connect() {
-        if (stopped) return
+        if (stopped || gatt != null) return
         val device = try {
             (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
                 ?.adapter?.getRemoteDevice(address)
-        } catch (e: IllegalArgumentException) {
-            Log.w(TAG, "bad address " + address, e)
+        } catch (e: Exception) {
+            Log.w(TAG, "cannot resolve device $address", e)
             null
-        } ?: return
+        }
+        if (device == null) {
+            scheduleReconnect("device unavailable")
+            return
+        }
 
         // autoConnect = true: the stack keeps a background connection attempt
         // alive across the watch going in and out of range, which is cheaper
         // than us re-scanning every time.
-        gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
+        try {
+            gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: Exception) {
+            Log.w(TAG, "connectGatt failed", e)
+            scheduleReconnect("connectGatt failed")
+        }
     }
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    backoffMs = MIN_BACKOFF_MS
-                    onConnectionChange(true)
-                    // A longer connection interval is the biggest phone-side
-                    // power saving available. The peripheral still pushes
-                    // notifications at its own 1 Hz.
-                    g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER)
-                    g.discoverServices()
-                }
-
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    onConnectionChange(false)
-                    g.close()
-                    gatt = null
-                    if (!stopped) {
-                        reconnects += 1
-                        handler.postDelayed({ connect() }, backoffMs)
-                        backoffMs = (backoffMs * 2).coerceAtMost(MAX_BACKOFF_MS)
-                    }
-                }
-            }
+            handler.post { handleConnectionStateChange(g, status, newState) }
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            val ch = g.getService(GattUuids.HEART_RATE_SERVICE)
-                ?.getCharacteristic(GattUuids.HEART_RATE_MEASUREMENT)
-            if (ch == null) {
-                Log.w(TAG, "no heart rate characteristic - is broadcast mode still on?")
-                return
-            }
-            g.setCharacteristicNotification(ch, true)
-            val cccd = ch.getDescriptor(GattUuids.CLIENT_CHARACTERISTIC_CONFIG) ?: return
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-            } else {
-                @Suppress("DEPRECATION")
-                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                @Suppress("DEPRECATION")
-                g.writeDescriptor(cccd)
+            handler.post { handleServicesDiscovered(g, status) }
+        }
+
+        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
+            handler.post {
+                if (g === gatt && status != BluetoothGatt.GATT_SUCCESS) {
+                    failCurrentGatt(g, "notification descriptor write failed: $status")
+                }
             }
         }
 
@@ -120,16 +111,113 @@ class HrClient(
             ch: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            handle(ch, value)
+            val copy = value.copyOf()
+            handler.post { if (g === gatt) handle(ch, copy) }
         }
 
         @Deprecated("Replaced by the ByteArray overload on API 33")
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
             @Suppress("DEPRECATION")
-            val value = ch.value ?: return
-            handle(ch, value)
+            val value = ch.value?.copyOf() ?: return
+            handler.post { if (g === gatt) handle(ch, value) }
         }
     }
+
+    private fun handleConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+        if (g !== gatt) {
+            g.close()
+            return
+        }
+        if (status != BluetoothGatt.GATT_SUCCESS && newState != BluetoothProfile.STATE_DISCONNECTED) {
+            failCurrentGatt(g, "connection state failed: $status")
+            return
+        }
+        when (newState) {
+            BluetoothProfile.STATE_CONNECTED -> {
+                backoffMs = MIN_BACKOFF_MS
+                onConnectionChange(true)
+                g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER)
+                if (!g.discoverServices()) {
+                    failCurrentGatt(g, "discoverServices returned false")
+                }
+            }
+
+            BluetoothProfile.STATE_DISCONNECTED -> {
+                gatt = null
+                g.close()
+                onConnectionChange(false)
+                scheduleReconnect("link down")
+            }
+        }
+    }
+
+    private fun handleServicesDiscovered(g: BluetoothGatt, status: Int) {
+        if (g !== gatt) return
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            failCurrentGatt(g, "service discovery failed: $status")
+            return
+        }
+        val ch = g.getService(GattUuids.HEART_RATE_SERVICE)
+            ?.getCharacteristic(GattUuids.HEART_RATE_MEASUREMENT)
+        if (ch == null) {
+            failCurrentGatt(g, "heart-rate characteristic missing")
+            return
+        }
+        if (!g.setCharacteristicNotification(ch, true)) {
+            failCurrentGatt(g, "setCharacteristicNotification returned false")
+            return
+        }
+        val cccd = ch.getDescriptor(GattUuids.CLIENT_CHARACTERISTIC_CONFIG)
+        if (cccd == null) {
+            failCurrentGatt(g, "heart-rate CCCD missing")
+            return
+        }
+        val rc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        } else {
+            @Suppress("DEPRECATION")
+            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            @Suppress("DEPRECATION")
+            if (g.writeDescriptor(cccd)) BluetoothGatt.GATT_SUCCESS else -1
+        }
+        if (rc != BluetoothGatt.GATT_SUCCESS) {
+            failCurrentGatt(g, "writeDescriptor returned $rc")
+        }
+    }
+
+    private fun failCurrentGatt(g: BluetoothGatt, reason: String) {
+        if (g !== gatt) return
+        Log.w(TAG, reason)
+        onConnectionChange(false)
+        closeCurrentGatt()
+        scheduleReconnect(reason)
+    }
+
+    private fun closeCurrentGatt() {
+        val current = gatt ?: return
+        gatt = null
+        runCatching { current.disconnect() }
+        current.close()
+    }
+
+    private fun scheduleReconnect(reason: String, delayMs: Long = backoffMs) {
+        if (stopped || reconnectRunnable != null) return
+        reconnects += 1
+        Log.i(TAG, "retrying in ${delayMs}ms: $reason")
+        val task = Runnable {
+            reconnectRunnable = null
+            connect()
+        }
+        reconnectRunnable = task
+        handler.postDelayed(task, delayMs)
+        if (delayMs > 0L) backoffMs = (backoffMs * 2).coerceAtMost(MAX_BACKOFF_MS)
+    }
+
+    /*
+     * BLE callbacks are marshalled onto [handler] above. This keeps teardown,
+     * reconnect scheduling and notification setup ordered on one thread; a
+     * callback from a closed GATT instance cannot revive stale state.
+     */
 
     private fun handle(ch: BluetoothGattCharacteristic, value: ByteArray) {
         if (ch.uuid != GattUuids.HEART_RATE_MEASUREMENT) return

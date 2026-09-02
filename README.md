@@ -222,14 +222,16 @@ showing up as a silently wrong heart rate.
   tests against the captured bytes.
 * Server pipeline: verified end to end with the simulator, UDP → WebSocket →
   dashboard, including decay to offline.
-* The full Android app builds and its parsers pass, but the Multi-Link client
-  has **not yet been run inside the service against the watch** — only the
-  standalone probe has.
+* The Android bridge uses a `connectedDevice` foreground service, holds a
+  partial CPU wake lock while streaming, and force-reconnects a GATT link that
+  stays connected but delivers no heart-rate notification for 30 seconds.
+  Unit tests and a successful build cover the recovery policy, but a full
+  screen-off overnight run is still required.
 
 Outstanding, in order of how much they can still sink this:
 
-1. Whether the stream survives screen-off and Doze on ColorOS for 24 h. This is
-   the biggest unknown now; the killer is the vendor power manager, not BLE.
+1. Whether the wake-lock plus silent-stream watchdog survives screen-off on
+   ColorOS for 24 h without an unacceptable phone battery cost.
 2. All-day battery cost of a Multi-Link subscription — unmeasured.
 3. Close-handle message format; the client currently just detaches.
 4. Whether lane 0 stays free after a watch reboot or a Connect firmware sync.

@@ -42,6 +42,7 @@ class MultiLinkClient(
     private var gatt: BluetoothGatt? = null
     private var stopped = false
     private var backoffMs = MIN_BACKOFF_MS
+    private var reconnectRunnable: Runnable? = null
 
     private var lane: MultiLink.Lane? = null
     private var hrHandle: Int? = null
@@ -64,103 +65,61 @@ class MultiLinkClient(
 
     override fun stop() {
         stopped = true
-        handler.removeCallbacksAndMessages(null)
+        reconnectRunnable?.let(handler::removeCallbacks)
+        reconnectRunnable = null
         // The close-handle message format is untested, so the client simply
         // detaches. The watch releases the lane when the GATT client goes away.
-        gatt?.disconnect()
-        gatt?.close()
-        gatt = null
-        hrHandle = null
+        closeCurrentGatt()
+        clearRegistrationState()
+    }
+
+    override fun reconnect(reason: String) {
+        handler.post {
+            if (stopped) return@post
+            Log.w(TAG, "forcing reconnect: $reason")
+            onStatus("stream stalled, reconnecting")
+            onConnectionChange(false)
+            closeCurrentGatt()
+            clearRegistrationState()
+            scheduleReconnect(reason, delayMs = 0L)
+        }
     }
 
     private fun connect() {
-        if (stopped) return
+        if (stopped || gatt != null) return
         val device = try {
             (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
                 ?.adapter?.getRemoteDevice(address)
-        } catch (e: IllegalArgumentException) {
-            Log.w(TAG, "bad address " + address, e)
+        } catch (e: Exception) {
+            Log.w(TAG, "cannot resolve device $address", e)
             null
-        } ?: return
+        }
+        if (device == null) {
+            scheduleReconnect("device unavailable")
+            return
+        }
 
-        gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
+        onStatus("connecting")
+        try {
+            gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: Exception) {
+            Log.w(TAG, "connectGatt failed", e)
+            scheduleReconnect("connectGatt failed")
+        }
     }
 
     private val callback = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    backoffMs = MIN_BACKOFF_MS
-                    onConnectionChange(true)
-                    onStatus("link up, discovering services")
-                    g.discoverServices()
-                }
-
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    onConnectionChange(false)
-                    hrHandle = null
-                    lane = null
-                    pending.clear()
-                    g.close()
-                    gatt = null
-                    if (!stopped) {
-                        reconnects += 1
-                        onStatus("link down, retrying")
-                        handler.postDelayed({ connect() }, backoffMs)
-                        backoffMs = (backoffMs * 2).coerceAtMost(MAX_BACKOFF_MS)
-                    }
-                }
-            }
+            handler.post { handleConnectionStateChange(g, status, newState) }
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            val lanes = MultiLink.discoverLanes(g)
-            if (lanes.isEmpty()) {
-                onStatus("no Multi-Link service on this device")
-                Log.w(TAG, "no multi-link lanes found")
-                return
-            }
-            val chosen = lanes.getOrNull(laneIndex)
-            if (chosen == null) {
-                onStatus("lane $laneIndex not present (${lanes.size} lanes)")
-                return
-            }
-            lane = chosen
-            Log.i(TAG, "lanes=" + lanes.size + " using lane " + chosen.index + " " + chosen.notify)
-
-            val notifyChar = g.getService(MultiLink.SERVICE)?.getCharacteristic(chosen.notify)
-            if (notifyChar == null) {
-                onStatus("lane characteristic missing")
-                return
-            }
-            g.setCharacteristicNotification(notifyChar, true)
-            val cccd = notifyChar.getDescriptor(MultiLink.CCCD)
-            if (cccd == null) {
-                onStatus("lane has no CCCD")
-                return
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-            } else {
-                @Suppress("DEPRECATION")
-                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                @Suppress("DEPRECATION")
-                g.writeDescriptor(cccd)
-            }
+            handler.post { handleServicesDiscovered(g, status) }
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            if (d.characteristic.uuid != lane?.notify) return
-            // Registering REGISTRATION before REAL_TIME_HR mirrors the sequence
-            // that was proven to work; GFDI is deliberately not registered,
-            // because the watch then repeats device-info frames forever waiting
-            // for a handshake this project has no use for.
-            pending.clear()
-            pending.addLast(MultiLink.SVC_REGISTRATION)
-            pending.addLast(MultiLink.SVC_REAL_TIME_HR)
-            onStatus("registering services")
-            sendNextRegistration(g)
+            handler.post { handleDescriptorWrite(g, d, status) }
         }
 
         override fun onCharacteristicChanged(
@@ -168,24 +127,128 @@ class MultiLinkClient(
             ch: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            handleFrame(g, ch, value)
+            val copy = value.copyOf()
+            handler.post { if (g === gatt) handleFrame(g, ch, copy) }
         }
 
         @Deprecated("Replaced by the ByteArray overload on API 33")
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
             @Suppress("DEPRECATION")
-            val value = ch.value ?: return
-            handleFrame(g, ch, value)
+            val value = ch.value?.copyOf() ?: return
+            handler.post { if (g === gatt) handleFrame(g, ch, value) }
         }
     }
 
+    private fun handleConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+        if (g !== gatt) {
+            g.close()
+            return
+        }
+        if (status != BluetoothGatt.GATT_SUCCESS && newState != BluetoothProfile.STATE_DISCONNECTED) {
+            failCurrentGatt(g, "connection state failed: $status")
+            return
+        }
+        when (newState) {
+            BluetoothProfile.STATE_CONNECTED -> {
+                backoffMs = MIN_BACKOFF_MS
+                onConnectionChange(true)
+                onStatus("link up, discovering services")
+                if (!g.discoverServices()) {
+                    failCurrentGatt(g, "discoverServices returned false")
+                }
+            }
+
+            BluetoothProfile.STATE_DISCONNECTED -> {
+                gatt = null
+                g.close()
+                clearRegistrationState()
+                onConnectionChange(false)
+                scheduleReconnect("link down")
+            }
+        }
+    }
+
+    private fun handleServicesDiscovered(g: BluetoothGatt, status: Int) {
+        if (g !== gatt) return
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            failCurrentGatt(g, "service discovery failed: $status")
+            return
+        }
+        val lanes = MultiLink.discoverLanes(g)
+        if (lanes.isEmpty()) {
+            failCurrentGatt(g, "no Multi-Link service on this device")
+            return
+        }
+        val chosen = lanes.getOrNull(laneIndex)
+        if (chosen == null) {
+            failCurrentGatt(g, "lane $laneIndex not present (${lanes.size} lanes)")
+            return
+        }
+        lane = chosen
+        Log.i(TAG, "lanes=${lanes.size} using lane ${chosen.index} ${chosen.notify}")
+
+        val notifyChar = g.getService(MultiLink.SERVICE)?.getCharacteristic(chosen.notify)
+        if (notifyChar == null) {
+            failCurrentGatt(g, "lane characteristic missing")
+            return
+        }
+        if (!g.setCharacteristicNotification(notifyChar, true)) {
+            failCurrentGatt(g, "setCharacteristicNotification returned false")
+            return
+        }
+        val cccd = notifyChar.getDescriptor(MultiLink.CCCD)
+        if (cccd == null) {
+            failCurrentGatt(g, "lane has no CCCD")
+            return
+        }
+        val rc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        } else {
+            @Suppress("DEPRECATION")
+            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            @Suppress("DEPRECATION")
+            if (g.writeDescriptor(cccd)) BluetoothGatt.GATT_SUCCESS else -1
+        }
+        if (rc != BluetoothGatt.GATT_SUCCESS) {
+            failCurrentGatt(g, "writeDescriptor returned $rc")
+        }
+    }
+
+    private fun handleDescriptorWrite(
+        g: BluetoothGatt,
+        d: BluetoothGattDescriptor,
+        status: Int,
+    ) {
+        if (g !== gatt || d.characteristic.uuid != lane?.notify) return
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            failCurrentGatt(g, "notification descriptor write failed: $status")
+            return
+        }
+        // Registering REGISTRATION before REAL_TIME_HR mirrors the sequence
+        // that was proven to work; GFDI is deliberately not registered.
+        pending.clear()
+        pending.addLast(MultiLink.SVC_REGISTRATION)
+        pending.addLast(MultiLink.SVC_REAL_TIME_HR)
+        onStatus("registering services")
+        sendNextRegistration(g)
+    }
+
     private fun sendNextRegistration(g: BluetoothGatt) {
+        if (g !== gatt) return
         val serviceId = pending.firstOrNull() ?: return
-        val laneNow = lane ?: return
-        val writeChar = g.getService(MultiLink.SERVICE)?.getCharacteristic(laneNow.write) ?: return
+        val laneNow = lane
+        if (laneNow == null) {
+            failCurrentGatt(g, "registration lane disappeared")
+            return
+        }
+        val writeChar = g.getService(MultiLink.SERVICE)?.getCharacteristic(laneNow.write)
+        if (writeChar == null) {
+            failCurrentGatt(g, "registration write characteristic missing")
+            return
+        }
         val frame = MultiLink.registrationFrame(serviceId)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val rc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             g.writeCharacteristic(
                 writeChar,
                 frame,
@@ -197,7 +260,10 @@ class MultiLinkClient(
             @Suppress("DEPRECATION")
             writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
             @Suppress("DEPRECATION")
-            g.writeCharacteristic(writeChar)
+            if (g.writeCharacteristic(writeChar)) BluetoothGatt.GATT_SUCCESS else -1
+        }
+        if (rc != BluetoothGatt.GATT_SUCCESS) {
+            failCurrentGatt(g, "registration write returned $rc")
         }
     }
 
@@ -240,14 +306,15 @@ class MultiLinkClient(
                 // left to the user rather than done automatically: writing into
                 // the lane Garmin Connect holds is the one thing that could
                 // disturb it.
-                onStatus("lane $laneIndex already in use - try another lane")
-                pending.clear()
+                stopForConfigurationError(g, "lane $laneIndex already in use - try another lane")
                 return
             }
 
             MultiLink.STATUS_PENDING_AUTH -> {
-                onStatus("watch demands authentication on service ${reply.serviceId}")
-                pending.clear()
+                stopForConfigurationError(
+                    g,
+                    "watch demands authentication on service ${reply.serviceId}",
+                )
                 return
             }
 
@@ -258,6 +325,50 @@ class MultiLinkClient(
             }
         }
         if (pending.isNotEmpty()) sendNextRegistration(g)
+    }
+
+    private fun stopForConfigurationError(g: BluetoothGatt, reason: String) {
+        if (g !== gatt) return
+        onStatus(reason)
+        onConnectionChange(false)
+        closeCurrentGatt()
+        clearRegistrationState()
+    }
+
+    private fun failCurrentGatt(g: BluetoothGatt, reason: String) {
+        if (g !== gatt) return
+        Log.w(TAG, reason)
+        onStatus(reason)
+        onConnectionChange(false)
+        closeCurrentGatt()
+        clearRegistrationState()
+        scheduleReconnect(reason)
+    }
+
+    private fun clearRegistrationState() {
+        hrHandle = null
+        lane = null
+        pending.clear()
+    }
+
+    private fun closeCurrentGatt() {
+        val current = gatt ?: return
+        gatt = null
+        runCatching { current.disconnect() }
+        current.close()
+    }
+
+    private fun scheduleReconnect(reason: String, delayMs: Long = backoffMs) {
+        if (stopped || reconnectRunnable != null) return
+        reconnects += 1
+        onStatus("retrying in ${delayMs}ms: $reason")
+        val task = Runnable {
+            reconnectRunnable = null
+            connect()
+        }
+        reconnectRunnable = task
+        handler.postDelayed(task, delayMs)
+        if (delayMs > 0L) backoffMs = (backoffMs * 2).coerceAtMost(MAX_BACKOFF_MS)
     }
 
     companion object {

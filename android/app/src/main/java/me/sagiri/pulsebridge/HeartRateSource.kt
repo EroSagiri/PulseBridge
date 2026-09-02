@@ -9,6 +9,13 @@ interface HeartRateSource {
     fun start()
     fun stop()
 
+    /**
+     * Tears down the current GATT client and starts a fresh connection attempt.
+     * Implementations must serialize this with Bluetooth callbacks and ignore
+     * callbacks belonging to the retired GATT instance.
+     */
+    fun reconnect(reason: String)
+
     /** Link drops since start; the headline number for overnight stability. */
     val reconnects: Int
 
