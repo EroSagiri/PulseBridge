@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PulseBridge</title>
+<style>
+  :root {
+    --bg: #0b0d10; --card: #14181d; --line: #232a32;
+    --fg: #e8edf2; --dim: #7b8794; --accent: #ff4d6d;
+    --ok: #3ddc97; --warn: #ffb454; --off: #5a646f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 20px; padding: 24px;
+  }
+  #devices { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 28px 34px; min-width: 260px; text-align: center;
+  }
+  .id { color: var(--dim); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+  .hr { font-size: 84px; font-weight: 650; line-height: 1; margin: 14px 0 2px;
+        font-variant-numeric: tabular-nums; }
+  .hr.live { color: var(--accent); }
+  .hr.dead { color: var(--off); }
+  .unit { color: var(--dim); font-size: 14px; letter-spacing: .12em; }
+  .heart { display: inline-block; color: var(--accent); font-size: 26px; vertical-align: middle;
+           margin-right: 10px; }
+  .heart.beat { animation: beat var(--period, 1s) ease-in-out infinite; }
+  @keyframes beat { 0%,100% { transform: scale(1); } 12% { transform: scale(1.28); }
+                    26% { transform: scale(1); } 38% { transform: scale(1.14); } }
+  .meta { margin-top: 16px; display: flex; flex-direction: column; gap: 5px;
+          color: var(--dim); font-size: 13px; }
+  .row { display: flex; justify-content: space-between; gap: 24px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 7px; }
+  .online .dot { background: var(--ok); } .online { color: var(--ok); }
+  .stale  .dot { background: var(--warn); } .stale { color: var(--warn); }
+  .offline .dot { background: var(--off); } .offline { color: var(--off); }
+  #link { color: var(--dim); font-size: 12px; }
+  #empty { color: var(--dim); }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f6f7f9; --card: #fff; --line: #e2e6ea; --fg: #10151a; --dim: #6b7580; }
+  }
+</style>
+</head>
+<body>
+  <div id="devices"><div id="empty">waiting for a device…</div></div>
+  <div id="link">connecting…</div>
+
+<script>
+const devicesEl = document.getElementById('devices');
+const linkEl = document.getElementById('link');
+const state = new Map();
+
+function presenceClass(p) { return p; }
+
+function render() {
+  if (state.size === 0) {
+    devicesEl.innerHTML = '<div id="empty">waiting for a device…</div>';
+    return;
+  }
+  devicesEl.innerHTML = '';
+  for (const d of [...state.values()].sort((a, b) => a.device_id - b.device_id)) {
+    const live = d.presence !== 'offline' && d.heart_rate != null;
+    const card = document.createElement('div');
+    card.className = 'card';
+    // Sync the pulse animation to the reported rate so the page reads as live.
+    const period = live ? (60 / d.heart_rate).toFixed(2) + 's' : '1s';
+    card.innerHTML = `
+      <div class="id">device ${d.device_id}</div>
+      <div class="hr ${live ? 'live' : 'dead'}">
+        <span class="heart ${live ? 'beat' : ''}" style="--period:${period}">&#10084;</span>${live ? d.heart_rate : '--'}
+      </div>
+      <div class="unit">BPM</div>
+      <div class="meta">
+        <div class="row"><span>status</span>
+          <span class="${presenceClass(d.presence)}"><span class="dot"></span>${d.presence}</span></div>
+        <div class="row"><span>updated</span><span>${(d.age_ms / 1000).toFixed(1)}s ago</span></div>
+        <div class="row"><span>watch link</span><span>${d.watch_connected ? 'connected' : 'down'}</span></div>
+        <div class="row"><span>contact</span><span>${d.contact_ok ? 'ok' : 'poor'}</span></div>
+        <div class="row"><span>phone battery</span><span>${d.phone_battery_pct ?? '--'}%</span></div>
+        <div class="row"><span>packets / gaps</span><span>${d.packets} / ${d.gaps}</span></div>
+      </div>`;
+    devicesEl.appendChild(card);
+  }
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => { linkEl.textContent = 'connected'; };
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'snapshot') {
+      state.clear();
+      for (const d of msg.devices) state.set(d.device_id, d);
+      render();
+    } else if (msg.type === 'metric' && msg.event.metric === 'heart_rate') {
+      // Apply the event immediately instead of waiting for the next snapshot,
+      // so the displayed value tracks the watch rather than the 2s tick.
+      const d = state.get(msg.event.device_id);
+      if (d) {
+        d.heart_rate = msg.event.bpm;
+        d.contact_ok = msg.event.contact_ok;
+        d.age_ms = 0;
+        d.presence = 'online';
+        render();
+      }
+    }
+  };
+  ws.onclose = () => {
+    linkEl.textContent = 'disconnected — retrying…';
+    setTimeout(connect, 1500);
+  };
+  ws.onerror = () => ws.close();
+}
+
+connect();
+</script>
+</body>
+</html>

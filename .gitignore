@@ -1,0 +1,14 @@
+# Rust
+server/target/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+
+# Secrets: the pre-shared key must never be committed
+.env
+*.key
