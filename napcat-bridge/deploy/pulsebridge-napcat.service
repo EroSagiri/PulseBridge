@@ -1,0 +1,32 @@
+[Unit]
+Description=PulseBridge to NapCat custom online status bridge
+After=network-online.target pulsebridge.service napcat.service
+Wants=network-online.target
+Requires=pulsebridge.service napcat.service
+
+[Service]
+Type=simple
+User=pulsebridge
+Group=pulsebridge
+EnvironmentFile=/etc/pulsebridge/napcat-bridge.env
+ExecStart=/opt/pulsebridge/bin/pulsebridge-napcat-bridge
+WorkingDirectory=/opt/pulsebridge
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
