@@ -12,8 +12,8 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import me.sagiri.pulsebridge.HeartRateSource
+import me.sagiri.pulsebridge.PbLog
 
 /**
  * GATT client for the standard Heart Rate Service (0x180D / 0x2A37).
@@ -27,6 +27,7 @@ class HrClient(
     private val address: String,
     private val onSample: (hr: Int, contactOk: Boolean) -> Unit,
     private val onConnectionChange: (connected: Boolean) -> Unit,
+    private val onStatus: (String) -> Unit = {},
 ) : HeartRateSource {
     private val handler = Handler(Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
@@ -57,7 +58,7 @@ class HrClient(
     override fun reconnect(reason: String) {
         handler.post {
             if (stopped) return@post
-            Log.w(TAG, "forcing reconnect: $reason")
+            PbLog.w(TAG, "force_reconnect", fields = mapOf("reason" to reason))
             onConnectionChange(false)
             closeCurrentGatt()
             scheduleReconnect(reason, delayMs = 0L)
@@ -70,7 +71,7 @@ class HrClient(
             (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
                 ?.adapter?.getRemoteDevice(address)
         } catch (e: Exception) {
-            Log.w(TAG, "cannot resolve device $address", e)
+            PbLog.w(TAG, "device_resolve_failed", e, mapOf("address" to address))
             null
         }
         if (device == null) {
@@ -84,7 +85,7 @@ class HrClient(
         try {
             gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
         } catch (e: Exception) {
-            Log.w(TAG, "connectGatt failed", e)
+            PbLog.w(TAG, "gatt_connect_failed", e)
             scheduleReconnect("connectGatt failed")
         }
     }
@@ -135,6 +136,8 @@ class HrClient(
         when (newState) {
             BluetoothProfile.STATE_CONNECTED -> {
                 backoffMs = MIN_BACKOFF_MS
+                PbLog.i(TAG, "link_up", mapOf("gatt_status" to status))
+                onStatus("link up, gatt status=$status, discovering services")
                 onConnectionChange(true)
                 g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER)
                 if (!g.discoverServices()) {
@@ -146,7 +149,10 @@ class HrClient(
                 gatt = null
                 g.close()
                 onConnectionChange(false)
-                scheduleReconnect("link down")
+                val reason = "link down, gatt status=$status"
+                PbLog.w(TAG, "link_down", fields = mapOf("gatt_status" to status))
+                onStatus(reason)
+                scheduleReconnect(reason)
             }
         }
     }
@@ -187,7 +193,7 @@ class HrClient(
 
     private fun failCurrentGatt(g: BluetoothGatt, reason: String) {
         if (g !== gatt) return
-        Log.w(TAG, reason)
+        PbLog.w(TAG, "gatt_failure", fields = mapOf("reason" to reason))
         onConnectionChange(false)
         closeCurrentGatt()
         scheduleReconnect(reason)
@@ -203,7 +209,11 @@ class HrClient(
     private fun scheduleReconnect(reason: String, delayMs: Long = backoffMs) {
         if (stopped || reconnectRunnable != null) return
         reconnects += 1
-        Log.i(TAG, "retrying in ${delayMs}ms: $reason")
+        PbLog.i(
+            TAG,
+            "reconnect_scheduled",
+            mapOf("delay_ms" to delayMs, "reason" to reason, "reconnects" to reconnects),
+        )
         val task = Runnable {
             reconnectRunnable = null
             connect()

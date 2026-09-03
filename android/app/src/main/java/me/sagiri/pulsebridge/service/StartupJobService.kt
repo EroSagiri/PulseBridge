@@ -2,8 +2,8 @@ package me.sagiri.pulsebridge.service
 
 import android.app.job.JobParameters
 import android.app.job.JobService
-import android.util.Log
 import me.sagiri.pulsebridge.BridgeState
+import me.sagiri.pulsebridge.PbLog
 import me.sagiri.pulsebridge.Prefs
 
 class StartupJobService : JobService() {
@@ -16,8 +16,8 @@ class StartupJobService : JobService() {
         if (!prefs.isConfigured() || BridgeState.state.value.running) return false
 
         runCatching { BridgeService.startAfterBoot(this) }
-            .onSuccess { Log.i(TAG, "startup watchdog requested bridge recovery") }
-            .onFailure { Log.e(TAG, "startup watchdog could not start bridge", it) }
+            .onSuccess { PbLog.i(TAG, "startup_watchdog_recovery_requested") }
+            .onFailure { PbLog.e(TAG, "startup_watchdog_recovery_failed", it) }
         return false
     }
 

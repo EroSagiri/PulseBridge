@@ -12,8 +12,8 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import me.sagiri.pulsebridge.HeartRateSource
+import me.sagiri.pulsebridge.PbLog
 
 /**
  * Streams 1 Hz heart rate off a Garmin watch over its private Multi-Link
@@ -76,7 +76,7 @@ class MultiLinkClient(
     override fun reconnect(reason: String) {
         handler.post {
             if (stopped) return@post
-            Log.w(TAG, "forcing reconnect: $reason")
+            PbLog.w(TAG, "force_reconnect", fields = mapOf("reason" to reason))
             onStatus("stream stalled, reconnecting")
             onConnectionChange(false)
             closeCurrentGatt()
@@ -91,7 +91,7 @@ class MultiLinkClient(
             (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
                 ?.adapter?.getRemoteDevice(address)
         } catch (e: Exception) {
-            Log.w(TAG, "cannot resolve device $address", e)
+            PbLog.w(TAG, "device_resolve_failed", e, mapOf("address" to address))
             null
         }
         if (device == null) {
@@ -103,7 +103,7 @@ class MultiLinkClient(
         try {
             gatt = device.connectGatt(context, true, callback, BluetoothDevice.TRANSPORT_LE)
         } catch (e: Exception) {
-            Log.w(TAG, "connectGatt failed", e)
+            PbLog.w(TAG, "gatt_connect_failed", e)
             scheduleReconnect("connectGatt failed")
         }
     }
@@ -151,8 +151,9 @@ class MultiLinkClient(
         when (newState) {
             BluetoothProfile.STATE_CONNECTED -> {
                 backoffMs = MIN_BACKOFF_MS
+                PbLog.i(TAG, "link_up", mapOf("gatt_status" to status))
+                onStatus("link up, gatt status=$status, discovering services")
                 onConnectionChange(true)
-                onStatus("link up, discovering services")
                 if (!g.discoverServices()) {
                     failCurrentGatt(g, "discoverServices returned false")
                 }
@@ -163,7 +164,10 @@ class MultiLinkClient(
                 g.close()
                 clearRegistrationState()
                 onConnectionChange(false)
-                scheduleReconnect("link down")
+                val reason = "link down, gatt status=$status"
+                PbLog.w(TAG, "link_down", fields = mapOf("gatt_status" to status))
+                onStatus(reason)
+                scheduleReconnect(reason)
             }
         }
     }
@@ -185,7 +189,11 @@ class MultiLinkClient(
             return
         }
         lane = chosen
-        Log.i(TAG, "lanes=${lanes.size} using lane ${chosen.index} ${chosen.notify}")
+        PbLog.i(
+            TAG,
+            "lane_selected",
+            mapOf("lane_count" to lanes.size, "lane" to chosen.index, "notify" to chosen.notify),
+        )
 
         val notifyChar = g.getService(MultiLink.SERVICE)?.getCharacteristic(chosen.notify)
         if (notifyChar == null) {
@@ -282,11 +290,14 @@ class MultiLinkClient(
     }
 
     private fun onRegistrationReply(g: BluetoothGatt, reply: MultiLink.RegistrationReply) {
-        Log.i(
+        PbLog.i(
             TAG,
-            "register svc=" + reply.serviceId +
-                " status=" + MultiLink.statusName(reply.status) +
-                " handle=" + reply.handle
+            "registration_reply",
+            mapOf(
+                "service_id" to reply.serviceId,
+                "status" to MultiLink.statusName(reply.status),
+                "handle" to reply.handle,
+            ),
         )
         if (pending.firstOrNull() == reply.serviceId) pending.removeFirst()
 
@@ -337,7 +348,7 @@ class MultiLinkClient(
 
     private fun failCurrentGatt(g: BluetoothGatt, reason: String) {
         if (g !== gatt) return
-        Log.w(TAG, reason)
+        PbLog.w(TAG, "gatt_failure", fields = mapOf("reason" to reason))
         onStatus(reason)
         onConnectionChange(false)
         closeCurrentGatt()
@@ -361,6 +372,11 @@ class MultiLinkClient(
     private fun scheduleReconnect(reason: String, delayMs: Long = backoffMs) {
         if (stopped || reconnectRunnable != null) return
         reconnects += 1
+        PbLog.i(
+            TAG,
+            "reconnect_scheduled",
+            mapOf("delay_ms" to delayMs, "reason" to reason, "reconnects" to reconnects),
+        )
         onStatus("retrying in ${delayMs}ms: $reason")
         val task = Runnable {
             reconnectRunnable = null

@@ -41,6 +41,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cipher = Arc::new(Cipher::new(&key));
     let store = Arc::new(Store::new());
 
+    info!(
+        udp_addr = %udp_addr,
+        http_addr = %http_addr,
+        web_dir = %web_dir,
+        "server configuration loaded"
+    );
+
     let socket = UdpSocket::bind(&udp_addr).await?;
     tokio::spawn(udp::run(socket, cipher, store.clone()));
 

@@ -151,7 +151,19 @@ private fun Screen(prefs: Prefs) {
                 StatRow("sensor contact", if (state.contactOk) "ok" else "poor")
                 state.restingHr?.let { StatRow("resting hr", "$it bpm") }
                 state.sourceStatus?.let { StatRow("source", it) }
-                state.lastError?.let { StatRow("last error", it) }
+                StatRow("last sample age", formatAge(state.lastSampleAtMs))
+                state.diagnostics.lastSourceEvent?.let {
+                    StatRow("last source event", "$it (${formatAge(state.diagnostics.lastSourceEventAtMs)})")
+                }
+                StatRow("watchdog recoveries", state.diagnostics.watchdogRecoveries.toString())
+                StatRow("last UDP send", formatAge(state.diagnostics.lastUdpSentAtMs))
+                StatRow("UDP send failures", state.diagnostics.udpSendFailures.toString())
+                state.diagnostics.lastUdpError?.let {
+                    StatRow("last UDP error", "$it (${formatAge(state.diagnostics.lastUdpErrorAtMs)})")
+                }
+                state.lastError?.takeIf { it != state.diagnostics.lastUdpError }?.let {
+                    StatRow("last error", it)
+                }
             }
         }
 
@@ -362,4 +374,13 @@ private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
 private fun formatDuration(ms: Long): String {
     val total = ms / 1000
     return "%d:%02d:%02d".format(total / 3600, (total % 3600) / 60, total % 60)
+}
+
+private fun formatAge(timestampMs: Long): String {
+    val age = ageMs(System.currentTimeMillis(), timestampMs) ?: return "--"
+    return if (age < 1_000L) {
+        "${age}ms"
+    } else {
+        "${age / 1_000L}s"
+    }
 }

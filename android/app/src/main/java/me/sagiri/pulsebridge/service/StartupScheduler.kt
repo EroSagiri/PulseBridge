@@ -4,7 +4,7 @@ import android.app.job.JobInfo
 import android.app.job.JobScheduler
 import android.content.ComponentName
 import android.content.Context
-import android.util.Log
+import me.sagiri.pulsebridge.PbLog
 
 /**
  * A persisted system job is the last-resort path for OEMs that defer manifest
@@ -33,6 +33,6 @@ object StartupScheduler {
             .setPeriodic(INTERVAL_MS, FLEX_MS)
             .build()
         val result = jobs.schedule(job)
-        Log.i(TAG, "persisted startup watchdog scheduled: result=$result")
+        PbLog.i(TAG, "startup_watchdog_scheduled", mapOf("result" to result))
     }
 }

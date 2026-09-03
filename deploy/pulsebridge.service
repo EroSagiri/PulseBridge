@@ -1,0 +1,38 @@
+[Unit]
+Description=PulseBridge telemetry server (UDP ingest + HTTP/WS dashboard)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pulsebridge
+Group=pulsebridge
+EnvironmentFile=/etc/pulsebridge/env
+Environment=RUST_LOG=pulsebridge_server=info
+ExecStart=/opt/pulsebridge/bin/pulsebridge-server
+ExecStartPre=/usr/bin/install -d -o pulsebridge -g pulsebridge -m 0750 /var/log/pulsebridge
+WorkingDirectory=/opt/pulsebridge
+Restart=on-failure
+RestartSec=2
+
+LogsDirectory=pulsebridge
+StandardOutput=append:/var/log/pulsebridge/server.log
+StandardError=append:/var/log/pulsebridge/server.log
+UMask=0027
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

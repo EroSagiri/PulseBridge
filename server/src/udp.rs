@@ -5,7 +5,7 @@ use tracing::{debug, info, warn};
 
 use crate::crypto::Cipher;
 use crate::protocol::{decode_packet, DecodeError, PACKET_LEN};
-use crate::state::{Accepted, Store};
+use crate::state::{now_ms, Accepted, Store};
 
 pub async fn run(socket: UdpSocket, cipher: Arc<Cipher>, store: Arc<Store>) {
     let mut buf = [0u8; 512];
@@ -22,23 +22,84 @@ pub async fn run(socket: UdpSocket, cipher: Arc<Cipher>, store: Arc<Store>) {
             }
         };
         if len != PACKET_LEN {
-            debug!("drop {len} bytes from {addr}: wrong length");
+            warn!(source = %addr, length = len, expected = PACKET_LEN, "drop packet: wrong length");
             continue;
         }
 
         match decode_packet(&cipher, &buf[..len]) {
             Ok((h, t)) => match store.ingest(&h, &t, addr) {
-                Accepted::Ok(Some(ev)) => debug!("device {} hr event {:?}", h.device_id, ev.metric),
-                Accepted::Ok(None) => {}
-                Accepted::Replay => debug!("device {} replay seq {}", h.device_id, h.sequence),
+                Accepted::Ok(report) => {
+                    if report.new_device {
+                        info!(
+                            device_id = h.device_id,
+                            session_id = h.session_id,
+                            source = %addr,
+                            "new device accepted"
+                        );
+                    } else if report.new_session {
+                        info!(
+                            device_id = h.device_id,
+                            session_id = h.session_id,
+                            source = %addr,
+                            "new session accepted"
+                        );
+                    }
+                    if report.gap_count > 0 {
+                        warn!(
+                            device_id = h.device_id,
+                            session_id = h.session_id,
+                            sequence = h.sequence,
+                            gap_count = report.gap_count,
+                            "telemetry sequence gap"
+                        );
+                    }
+                    debug!(
+                        device_id = h.device_id,
+                        session_id = h.session_id,
+                        sequence = h.sequence,
+                        source = %addr,
+                        timestamp_ms = h.timestamp_ms,
+                        received_at_ms = report.received_at_ms,
+                        ingest_lag_ms = report.ingest_lag_ms,
+                        flags = t.flags,
+                        heartbeat = t.flags & crate::protocol::FLAG_HEARTBEAT != 0,
+                        hr_valid = t.hr_valid(),
+                        contact_ok = t.contact_ok(),
+                        watch_connected = t.watch_connected(),
+                        "telemetry accepted"
+                    );
+                    if let Some(ev) = report.event {
+                        debug!(device_id = h.device_id, metric = ?ev.metric, "metric changed");
+                    }
+                }
+                Accepted::Replay => warn!(
+                    device_id = h.device_id,
+                    session_id = h.session_id,
+                    sequence = h.sequence,
+                    source = %addr,
+                    "replay packet rejected"
+                ),
                 Accepted::ClockSkew => {
-                    warn!("device {} rejected: clock skew > 120s", h.device_id)
+                    let received_at_ms = now_ms();
+                    let clock_skew_ms = if received_at_ms >= h.timestamp_ms {
+                        (received_at_ms - h.timestamp_ms) as i64
+                    } else {
+                        -((h.timestamp_ms - received_at_ms) as i64)
+                    };
+                    warn!(
+                        device_id = h.device_id,
+                        session_id = h.session_id,
+                        sequence = h.sequence,
+                        source = %addr,
+                        timestamp_ms = h.timestamp_ms,
+                        received_at_ms,
+                        clock_skew_ms,
+                        "packet rejected: clock skew > 120s"
+                    )
                 }
             },
-            Err(DecodeError::AuthFailed) => {
-                warn!("auth failure from {addr} (wrong key or tampered packet)")
-            }
-            Err(e) => debug!("drop packet from {addr}: {e:?}"),
+            Err(DecodeError::AuthFailed) => warn!(source = %addr, "packet rejected: auth failure"),
+            Err(e) => debug!(source = %addr, error = ?e, "drop packet: decode failure"),
         }
     }
 }

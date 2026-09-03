@@ -24,6 +24,7 @@ object BridgeState {
         val lastError: String? = null,
         /** Free-text detail from the source, e.g. Multi-Link registration state. */
         val sourceStatus: String? = null,
+        val diagnostics: DiagnosticState = DiagnosticState(),
     ) {
         val uptimeMs: Long
             get() = if (startedAtMs == 0L) 0 else System.currentTimeMillis() - startedAtMs

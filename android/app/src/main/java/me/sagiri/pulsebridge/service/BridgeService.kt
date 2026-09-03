@@ -14,7 +14,6 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
-import android.util.Log
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Job
@@ -25,6 +24,7 @@ import me.sagiri.pulsebridge.BridgeState
 import me.sagiri.pulsebridge.HeartRateSource
 import me.sagiri.pulsebridge.MainActivity
 import me.sagiri.pulsebridge.Prefs
+import me.sagiri.pulsebridge.PbLog
 import me.sagiri.pulsebridge.SourceMode
 import me.sagiri.pulsebridge.ble.HrClient
 import me.sagiri.pulsebridge.garmin.MultiLinkClient
@@ -88,6 +88,7 @@ class BridgeService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
 
         if (intent?.action == ACTION_STOP) {
+            PbLog.i(TAG, "service_stop_requested")
             stopEverything()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -112,7 +113,7 @@ class BridgeService : LifecycleService() {
         startupJob = lifecycleScope.launch {
             while (isActive) {
                 if (!prefs.isConfigured()) {
-                    Log.w(TAG, "bridge configuration unavailable at service start")
+                    PbLog.w(TAG, "configuration_unavailable")
                     stopEverything()
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
@@ -153,6 +154,15 @@ class BridgeService : LifecycleService() {
         }
 
         updateStartupStatus("starting")
+        PbLog.i(
+            TAG,
+            "service_started",
+            mapOf(
+                "device_id" to prefs.deviceId,
+                "source" to prefs.sourceMode,
+                "server" to "$host:${prefs.serverPort}",
+            ),
+        )
         acquireWakeLock()
 
         sender = UdpSender(
@@ -191,9 +201,7 @@ class BridgeService : LifecycleService() {
                 acceptSample(hr, contactOk = true)
             },
             onConnectionChange = ::acceptConnectionChange,
-            onStatus = { status ->
-                BridgeState.update { it.copy(sourceStatus = status) }
-            },
+            onStatus = ::acceptSourceStatus,
         )
 
         SourceMode.BROADCAST -> HrClient(
@@ -204,7 +212,19 @@ class BridgeService : LifecycleService() {
             // being presented as current.
             onSample = { hr, contact -> acceptSample(hr, contact) },
             onConnectionChange = ::acceptConnectionChange,
+            onStatus = ::acceptSourceStatus,
         )
+    }
+
+    private fun acceptSourceStatus(status: String) {
+        val now = System.currentTimeMillis()
+        PbLog.i(TAG, "source_status", mapOf("status" to status))
+        BridgeState.update {
+            it.copy(
+                sourceStatus = status,
+                diagnostics = it.diagnostics.sourceEvent(status, now),
+            )
+        }
     }
 
     private fun acceptSample(hr: Int, contactOk: Boolean) {
@@ -253,6 +273,12 @@ class BridgeService : LifecycleService() {
                 packetsSent = sender?.packetsSent ?: it.packetsSent,
                 reconnects = client?.reconnects ?: it.reconnects,
                 lastError = sender?.lastError,
+                diagnostics = it.diagnostics.copy(
+                    lastUdpSentAtMs = sender?.lastSentAtMs ?: it.diagnostics.lastUdpSentAtMs,
+                    udpSendFailures = sender?.sendFailures ?: it.diagnostics.udpSendFailures,
+                    lastUdpError = sender?.lastError ?: it.diagnostics.lastUdpError,
+                    lastUdpErrorAtMs = sender?.lastErrorAtMs ?: it.diagnostics.lastUdpErrorAtMs,
+                ),
             )
         }
         updateNotification(hr)
@@ -260,9 +286,15 @@ class BridgeService : LifecycleService() {
 
     private fun recoverSilentStreamIfNeeded() {
         if (!streamWatchdog.shouldRecover(SystemClock.elapsedRealtime())) return
+        val reason = "no heart-rate notification for ${STREAM_STALL_AFTER_MS / 1_000}s"
         lastHr = null
         lastSampleAtMs = 0L
-        source?.reconnect("no heart-rate notification for ${STREAM_STALL_AFTER_MS / 1_000}s")
+        val now = System.currentTimeMillis()
+        BridgeState.update {
+            it.copy(diagnostics = it.diagnostics.watchdogRecovery(reason, now))
+        }
+        PbLog.w(TAG, "watchdog_recovery", fields = mapOf("reason" to reason))
+        source?.reconnect(reason)
     }
 
     private fun batteryPct(): Int {

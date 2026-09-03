@@ -11,7 +11,7 @@ use serde_json::json;
 use std::path::PathBuf;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::state::Store;
 
@@ -83,6 +83,8 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 /// dashboard, a VRChat OSC bridge, Home Assistant -- speaks this and nothing
 /// else. It is deliberately JSON so consumers stay trivial to write.
 async fn ws_session(mut socket: WebSocket, store: Arc<Store>) {
+    let _session_log = WsSessionLog;
+    info!("websocket connected");
     let mut rx = store.subscribe();
 
     // Send current state immediately so a fresh client is not blank until the
@@ -135,5 +137,13 @@ async fn ws_session(mut socket: WebSocket, store: Arc<Store>) {
                 _ => {}
             }
         }
+    }
+}
+
+struct WsSessionLog;
+
+impl Drop for WsSessionLog {
+    fn drop(&mut self) {
+        info!("websocket disconnected");
     }
 }

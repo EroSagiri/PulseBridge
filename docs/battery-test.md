@@ -21,12 +21,25 @@ Leave the app streaming overnight, screen off, phone not on charge.
 In the morning record: phone battery delta, app **uptime**, **ble reconnects**,
 **samples**, and whether the dashboard shows an unbroken stream.
 
+For each run also record the App diagnostics: last sample age, last source
+event, watchdog recoveries and reason, last successful UDP send, UDP send
+failures, and last UDP error. Save the filtered Logcat output for the same
+time window. These fields are local diagnostics only and do not change the
+telemetry protocol.
+
 | observation | reading |
 |---|---|
 | uptime matches wall clock, reconnects low | the service survived; done |
 | uptime reset | the service was killed and restarted |
 | uptime fine, samples far below uptime seconds | link suspended while asleep |
 | reconnects in the dozens | link churning, probably the power manager |
+
+Interpret the diagnostic evidence before changing code: a GATT status on a
+link-down event indicates a BLE/ColorOS path; a watchdog recovery indicates a
+connected GATT link that stopped delivering notifications; a UDP error
+indicates DNS/socket/send failure; and a reset uptime with no orderly stop
+indicates process or service termination. A UDP receiver restart by itself is
+not proof of a sender error because UDP has no delivery handshake.
 
 `samples` should be close to `uptime` in seconds, since the watch streams at
 roughly 1 Hz. A large gap is the tell that something throttled the link without
@@ -77,10 +90,64 @@ Connect, so it may well cost less. Nobody has measured this.
 
 | date | test | source | start % | end % | hours | %/h | reconnects | notes |
 |------|------|--------|---------|-------|-------|-----|------------|-------|
-|      | C    | ML     |         |       |       |     |            |       |
+| 2026-09-03 | C (partial) | ML | n/a | n/a | 12.06 | n/a | 150 | uptime 12:03:37; samples 17,136; packets 21,795; contact ok; resting HR 52; not a pass |
 |      | A    | ML     |         |       |       |     |            |       |
 |      | B    | none   |         |       |       |     |            |       |
 |      | D    | BC     |         |       |       |     |            |       |
+
+The 2026-09-03 Test C entry is a partial result. The phone's system battery
+percentage at the beginning and end was not recorded, so no battery verdict is
+possible. OPPO's preceding 24-hour app attribution was 41 mAh foreground
+(11:47) and 48 mAh background (17:06); treat those as comparative estimates,
+not as a replacement for system battery start/end readings. The observed
+sample rate was about 0.395 Hz and reconnects were about 12.4/hour, so this
+run remains failed/inconclusive for the P1 stability target and should trigger
+ColorOS background, BLE watchdog, and Multi-Link investigation before P3.
+
+## P1 real-device link smoke check — 2026-09-03
+
+This short LAN validation is not a battery or overnight acceptance run. The
+phone was observed streaming through Multi-Link with system battery readings
+of 43% at the first observation and 46% later; charging was present, so the
+delta is not meaningful. Over the observed interval the app showed uptime
+`0:00:17` to `0:03:28`, samples `7` to `76`, packets `13` to `81`, and BLE
+reconnects remained `1`. Server observations reached `packets=92`,
+`last_sequence=92`, and `gaps=0`, with the device online. Dashboard and Live
+Embed requests over `192.168.1.3:8080` returned HTTP 200.
+
+The diagnostics-enabled short run started at 21:21:13 and ended at 21:33:02.
+The phone remained USB-powered (`level=54%` at the start and `61%` at the
+end), so it is not a battery test. The foreground service remained alive while
+the App was backgrounded: Android reported `isForeground=true`, BluetoothGatt
+notifications continued, and no watchdog, BLE reconnect, or UDP error event
+was observed. Server packets advanced from 61 to 396 and the sequence advanced
+from 89 to 425; the final snapshot was online with `gaps=1`. Record this as a
+successful service-survival/link smoke check with one observed UDP sequence
+gap, not as a zero-loss P1 pass.
+
+## Public server log correlation — 2026-09-03
+
+The release Server was built on the public host with its existing Rust 1.97.1
+toolchain and deployed to `/opt/pulsebridge`. Caddy remained on
+`https://pulse.sighjune.com`, HTTP stayed on `127.0.0.1:8087`, and UDP stayed on
+`0.0.0.0:9999`. The service was active after restart; the dedicated log was
+`/var/log/pulsebridge/server.log` with daily/100 MB rotation, seven compressed
+copies and `copytruncate`. The existing `/etc/pulsebridge/env` was preserved.
+
+The Android client was pointed at `s2.sighjune.com:9999` and produced
+`device_id=1552271651`, `session_id=602974534`, `sequence=1..3` in Logcat. The
+Server API then reported the same unsigned session and a live snapshot with
+`session_id=602974534`, `last_sequence=6`, `gaps=0`; later public snapshots
+continued to advance. Server `info` logs also recorded startup, websocket
+connect/disconnect, new device/session and a real sequence gap. This was a
+short interoperability check, not the planned 10-minute or 24-hour Test C;
+the service was restored to `RUST_LOG=pulsebridge_server=info` afterward.
+
+For a packet-level comparison, temporarily override the env-file log level
+with a systemd drop-in rather than editing or printing the PSK. Compare the
+Android `UdpSender` fields (`session_id`, `sequence`, `timestamp_ms`) with the
+Server debug fields (`session_id`, `sequence`, `timestamp_ms`,
+`received_at_ms`, `ingest_lag_ms`).
 
 ## If the answer is "too expensive"
 

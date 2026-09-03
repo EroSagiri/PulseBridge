@@ -3,7 +3,7 @@ package me.sagiri.pulsebridge.service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
+import me.sagiri.pulsebridge.PbLog
 import me.sagiri.pulsebridge.BridgeState
 import me.sagiri.pulsebridge.Prefs
 
@@ -13,11 +13,13 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action !in SUPPORTED_ACTIONS) return
         val prefs = Prefs(context)
         val shouldStart = prefs.autoStart && prefs.isConfigured()
-        Log.i(TAG, "received ${intent.action}; start=$shouldStart")
+        PbLog.i(TAG, "boot_event", mapOf("action" to intent.action, "start" to shouldStart))
         StartupScheduler.sync(context, prefs.autoStart)
         if (shouldStart && !BridgeState.state.value.running) {
             runCatching { BridgeService.startAfterBoot(context) }
-                .onFailure { Log.e(TAG, "cannot start bridge after ${intent.action}", it) }
+                .onFailure {
+                    PbLog.e(TAG, "boot_recovery_failed", it, mapOf("action" to intent.action))
+                }
         }
     }
 

@@ -1,7 +1,6 @@
 package me.sagiri.pulsebridge.net
 
 import android.os.SystemClock
-import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -11,6 +10,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import me.sagiri.pulsebridge.PbLog
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -30,6 +30,7 @@ class UdpSender(
 ) {
     private val key = key.copyOf()
     private val sessionId: Int = SecureRandom().nextInt()
+    private val sessionIdLog: Long = sessionId.toLong() and 0xffff_ffffL
     private var sequence: Int = 0
 
     private var socket: DatagramSocket? = null
@@ -44,6 +45,9 @@ class UdpSender(
 
     @Volatile var packetsSent: Long = 0; private set
     @Volatile var lastError: String? = null; private set
+    @Volatile var sendFailures: Long = 0; private set
+    @Volatile var lastSentAtMs: Long = 0; private set
+    @Volatile var lastErrorAtMs: Long = 0; private set
 
     data class Sample(
         val heartRate: Int?,
@@ -56,6 +60,11 @@ class UdpSender(
 
     fun start() {
         if (job != null) return
+        PbLog.i(
+            TAG,
+            "sender_started",
+            mapOf("device_id" to deviceId, "session_id" to sessionIdLog, "target" to "$host:$port"),
+        )
         job = scope.launch(Dispatchers.IO) {
             var latest: Sample? = null
             while (currentCoroutineContext().isActive) {
@@ -94,12 +103,13 @@ class UdpSender(
         sequence += 1
         val flags = flagsOf(sample, heartbeat)
         return try {
+            val timestampMs = System.currentTimeMillis()
             val bytes = PacketCodec.encode(
                 key = key,
                 deviceId = deviceId,
                 sessionId = sessionId,
                 sequence = sequence,
-                timestampMs = System.currentTimeMillis(),
+                timestampMs = timestampMs,
                 flags = flags,
                 heartRate = sample.heartRate ?: 0,
                 batteryPct = sample.batteryPct,
@@ -107,17 +117,27 @@ class UdpSender(
             )
             sock.send(DatagramPacket(bytes, bytes.size, addr, port))
             packetsSent += 1
+            lastSentAtMs = System.currentTimeMillis()
             lastSentAtElapsedMs = SystemClock.elapsedRealtime()
             lastSentHr = sample.heartRate ?: -1
             // HEARTBEAT describes this packet, not the underlying sample. Do
             // not let it make the same sample look changed on the next loop.
             lastSentFlags = flagsOf(sample, heartbeat = false)
-            lastError = null
+            PbLog.d(
+                TAG,
+                "packet_sent",
+                mapOf(
+                    "device_id" to deviceId,
+                    "session_id" to sessionIdLog,
+                    "sequence" to sequence,
+                    "timestamp_ms" to timestampMs,
+                    "heartbeat" to heartbeat,
+                ),
+            )
             openBackoffMs = MIN_OPEN_BACKOFF_MS
             true
         } catch (e: Exception) {
-            lastError = "send failed: ${e.message}"
-            Log.d(TAG, "send failed", e)
+            recordFailure("send failed", e)
             closeSocket()
             openBackoffMs = (openBackoffMs * 2).coerceAtMost(MAX_OPEN_BACKOFF_MS)
             false
@@ -133,12 +153,23 @@ class UdpSender(
             socket = opened
             true
         } catch (e: Exception) {
-            lastError = "resolve/bind failed: ${e.message}"
-            Log.w(TAG, "cannot open socket", e)
+            recordFailure("resolve/bind failed", e)
             closeSocket()
             openBackoffMs = (openBackoffMs * 2).coerceAtMost(MAX_OPEN_BACKOFF_MS)
             false
         }
+    }
+
+    private fun recordFailure(kind: String, error: Exception) {
+        lastError = "$kind: ${error.message ?: error::class.simpleName}"
+        lastErrorAtMs = System.currentTimeMillis()
+        sendFailures += 1
+        PbLog.w(
+            TAG,
+            "udp_failure",
+            error,
+            mapOf("device_id" to deviceId, "type" to kind, "failures" to sendFailures),
+        )
     }
 
     private fun closeSocket() {

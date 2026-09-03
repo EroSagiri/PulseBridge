@@ -74,9 +74,81 @@ pub struct Store {
 
 pub enum Accepted {
     /// Packet was accepted; carries an event if a metric actually changed.
-    Ok(Option<MetricEvent>),
+    Ok(IngestReport),
     Replay,
     ClockSkew,
+}
+
+/// Internal ingest evidence for logging. This never crosses the REST or
+/// WebSocket boundary.
+pub struct IngestReport {
+    pub event: Option<MetricEvent>,
+    pub received_at_ms: u64,
+    pub ingest_lag_ms: i64,
+    pub new_device: bool,
+    pub new_session: bool,
+    pub gap_count: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{
+        Header, Telemetry, FLAG_CONTACT_OK, FLAG_HR_VALID, FLAG_WATCH_CONNECTED,
+        PACKET_TELEMETRY,
+    };
+
+    fn header(session_id: u32, sequence: u32) -> Header {
+        Header {
+            packet_type: PACKET_TELEMETRY,
+            device_id: 42,
+            session_id,
+            sequence,
+            timestamp_ms: now_ms(),
+        }
+    }
+
+    fn telemetry() -> Telemetry {
+        Telemetry {
+            flags: FLAG_HR_VALID | FLAG_CONTACT_OK | FLAG_WATCH_CONNECTED,
+            heart_rate: 72,
+            battery_pct: 85,
+            resting_hr: 51,
+        }
+    }
+
+    #[test]
+    fn ingest_report_contains_device_session_lag_and_gap_metadata() {
+        let store = Store::new();
+        let addr = "192.0.2.10:9999".parse().unwrap();
+
+        let first = match store.ingest(&header(100, 1), &telemetry(), addr) {
+            Accepted::Ok(report) => report,
+            _ => panic!("expected accepted packet"),
+        };
+        assert!(first.new_device);
+        assert!(!first.new_session);
+        assert_eq!(first.gap_count, 0);
+        assert!(first.event.is_some());
+        assert!(first.ingest_lag_ms.abs() < 2_000);
+
+        let gap = match store.ingest(&header(100, 3), &telemetry(), addr) {
+            Accepted::Ok(report) => report,
+            _ => panic!("expected accepted packet"),
+        };
+        assert!(!gap.new_device);
+        assert!(!gap.new_session);
+        assert_eq!(gap.gap_count, 1);
+        assert!(gap.event.is_none());
+
+        let session = match store.ingest(&header(200, 1), &telemetry(), addr) {
+            Accepted::Ok(report) => report,
+            _ => panic!("expected accepted packet"),
+        };
+        assert!(!session.new_device);
+        assert!(session.new_session);
+        assert_eq!(session.gap_count, 0);
+    }
 }
 
 impl Store {
@@ -90,12 +162,13 @@ impl Store {
     }
 
     pub fn ingest(&self, h: &Header, t: &Telemetry, addr: SocketAddr) -> Accepted {
-        let now = now_ms();
-        if h.timestamp_ms.abs_diff(now) > 120_000 {
+        let received_at_ms = now_ms();
+        if h.timestamp_ms.abs_diff(received_at_ms) > 120_000 {
             return Accepted::ClockSkew;
         }
 
         let mut devices = self.devices.lock().unwrap();
+        let new_device = !devices.contains_key(&h.device_id);
         let dev = devices.entry(h.device_id).or_insert_with(|| Device {
             session_id: h.session_id,
             replay: ReplayWindow::default(),
@@ -114,7 +187,8 @@ impl Store {
 
         // A new session means the client restarted: drop the old replay state
         // instead of rejecting every packet until the sequence catches up.
-        if dev.session_id != h.session_id {
+        let new_session = dev.session_id != h.session_id;
+        if new_session {
             dev.session_id = h.session_id;
             dev.replay = ReplayWindow::default();
             dev.highest_seq = 0;
@@ -129,14 +203,16 @@ impl Store {
         // spoofed source address cannot hijack the device. See protocol.md 5.
         dev.addr = addr;
 
+        let mut gap_count = 0;
         if h.sequence > dev.highest_seq {
             if dev.highest_seq != 0 {
-                dev.gaps += (h.sequence - dev.highest_seq - 1) as u64;
+                gap_count = (h.sequence - dev.highest_seq - 1) as u64;
+                dev.gaps += gap_count;
             }
             dev.highest_seq = h.sequence;
         }
 
-        dev.last_seen_ms = now;
+        dev.last_seen_ms = received_at_ms;
         dev.last_sender_ts_ms = h.timestamp_ms;
         dev.packets += 1;
         dev.contact_ok = t.contact_ok();
@@ -163,7 +239,19 @@ impl Store {
             }
             _ => None,
         };
-        Accepted::Ok(event)
+        let ingest_lag_ms = if received_at_ms >= h.timestamp_ms {
+            (received_at_ms - h.timestamp_ms) as i64
+        } else {
+            -((h.timestamp_ms - received_at_ms) as i64)
+        };
+        Accepted::Ok(IngestReport {
+            event,
+            received_at_ms,
+            ingest_lag_ms,
+            new_device,
+            new_session,
+            gap_count,
+        })
     }
 
     pub fn snapshot_all(&self) -> Vec<DeviceSnapshot> {
