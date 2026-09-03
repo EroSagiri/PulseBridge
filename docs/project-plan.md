@@ -31,7 +31,7 @@ Rust Server
 
 | 资产 | 当前状态 | 事实边界 |
 |---|---|---|
-| `protocol/protocol.md` | 已完成基础 v1 | UDP 单包、AEAD、时间偏差、序列与 64 位重放窗口、地址重绑定规则已写明；payload 仍是心率专用 4 字节结构 |
+| `protocol/protocol.md` | 已完成基础 v1 | UDP 单包、AEAD、时间偏差、序列与 64 位重放窗口、地址重绑定规则已写明；独立 v1 测试向量已补齐；payload 仍是心率专用 4 字节结构 |
 | `shared/pulsebridge-api/` | 已完成当前订阅契约 | Rust 类型包含 `Presence`、`Metric::HeartRate`、`MetricEvent`、`DeviceSnapshot`、`ServerMessage`；目前只有心率 Metric |
 | `server/` | 已完成本地实时 MVP | Rust/Tokio/Axum；UDP 解包、ChaCha20-Poly1305、内存 Store、latest-state、Presence 衰减、REST、WebSocket、静态 Dashboard、Simulator 均存在 |
 | `android/` | 实现已落地，待实机长时验收 | Kotlin Android App、Multi-Link、标准 HRS Broadcast、Foreground Service、自动重连、发送即变化、10 秒 heartbeat、屏幕关闭 watchdog、WakeLock 均存在 |
@@ -93,7 +93,7 @@ VRChat 和 NapCat 均已从 Server 中独立出来，只共享 `shared/pulsebrid
 
 VRChat 当前是 Chatbox 文本显示，不是 Avatar 参数或 Avatar HUD。Chatbox 是单一文本槽位，自动刷新可能覆盖用户手动聊天；因此它是 v1 兼容方案，不应描述为独立且无冲突的长期显示方案。
 
-### M4：Embed Kit / Share Kit 前置条件 — 已具备，功能尚未实现
+### M4：Embed Kit / Share Kit — E1/E2 已完成，E3–E7 未开始
 
 这不是新的数据链路，而是现有 WebSocket 和静态 Web 的 UI 入口。当前已经具备：
 
@@ -116,7 +116,7 @@ VRChat 当前是 Chatbox 文本显示，不是 Avatar 参数或 Avatar HUD。Cha
 - Rust Server 的 replay、clock skew、presence、latest-state 语义。
 - Android PacketCodec 与 Rust codec 的字节兼容。
 
-补齐项：将测试向量整理为独立的 `protocol/test-vectors/`，并明确共享 WebSocket JSON 的版本兼容规则。
+已补齐：测试向量位于 `protocol/test-vectors/telemetry-v1.json`，共享 WebSocket JSON 的版本兼容规则位于 `protocol/websocket-v1.md`；Rust 与 Android 均对同一完整报文进行校验。
 
 ### P1：真实设备链路闭环 — 最高优先级
 
@@ -140,7 +140,7 @@ Dashboard / VRChat / NapCat
 4. 断网、重连、Wi-Fi/5G 切换后，只恢复最新状态，不伪造历史回放。
 5. 记录 Server 接收时间、Android 发送时间和来源时间，形成实际延迟基线。
 
-### P2：Embed Kit / Share Kit — 可提前实现，可与 P1 并行
+### P2：Embed Kit / Share Kit — E1/E2 已完成，可继续与 P1 并行
 
 #### P2.1 目标与分层
 
@@ -220,7 +220,7 @@ E6  Web Component：pulse-heartbeat.js
 E7  oEmbed：粘贴个人页 URL 自动获得 iframe
 ```
 
-P2 的最小验收线是 E1 + E2：浏览器/OBS 能通过 `/ws` 显示当前心率，断线可恢复，旧值会进入 stale/offline，透明背景和基本参数可用。E3–E7 可按平台需求逐步增加。
+P2 的最小验收线 E1 + E2 已通过：浏览器/OBS 能通过 `/ws` 显示当前心率，断线可恢复，旧值会进入 stale/offline，透明背景和基本参数可用。E3–E7 可按平台需求逐步增加。
 
 ### P3：正式设备身份与 Enrollment — 未开始
 
@@ -312,11 +312,10 @@ Embed Kit 是可以提前交付的 UI 入口，不改变上述核心 v1 的设�
 
 ## 六、当前下一步
 
-1. 先实现 Embed Kit 的 E1/E2：复用现有 `/ws` 和 `server/web/`，以 `device_id` 做受控 UI 入口。
-2. 并行在真实 Android/FR255 上执行 `docs/battery-test.md` 的 Test C，再执行 Test A/B。
-3. 用真实设备跑通 Android → UDP → Server → WebSocket → Dashboard/Embed，并记录延迟和断线恢复。
-4. 根据实测结果修正 ColorOS 后台存活，并整理 protocol test vectors 和 WebSocket 版本契约。
-5. 实机链路和 UI 入口稳定后，再开始 P3 的设备 Enrollment；不要提前开发 OAuth、Federation 或完整历史系统。
+1. 在真实 Android/FR255 上执行 `docs/battery-test.md` 的 Test C，再执行 Test A/B。
+2. 用真实设备跑通 Android → UDP → Server → WebSocket → Dashboard/Embed，并记录延迟和断线恢复。
+3. 根据实测结果修正 ColorOS 后台存活，并持续维护协议向量与 WebSocket v1 契约。
+4. 实机链路和 UI 入口稳定后，再开始 P3 的设备 Enrollment；不要提前开发 OAuth、Federation 或完整历史系统。
 
 ## 七、当前验证记录
 
@@ -328,6 +327,8 @@ cargo test --manifest-path server/Cargo.toml --all-targets         → 8 passed
 cargo test --manifest-path vrchat-bridge/Cargo.toml                → 8 passed
 cargo test --manifest-path napcat-bridge/Cargo.toml                → 0 tests, build passed
 android/gradlew.bat test                                           → BUILD SUCCESSFUL
+protocol/test-vectors/telemetry-v1.json                            → Rust/Android codec vector checks passed
+Embed E1/E2                                                         → local HTTP, WebSocket and browser stale-state checks passed
 ```
 
 以上是代码级证据，不等于物理设备已完成 24 小时运行或功耗验收。硬件证据以 `docs/phase0-multilink.md` 和后续新增的实测记录为准。

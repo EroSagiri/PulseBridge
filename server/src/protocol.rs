@@ -195,6 +195,35 @@ mod tests {
     }
 
     #[test]
+    fn independent_json_vector_matches_wire_packet() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../protocol/test-vectors/telemetry-v1.json")
+        ))
+        .unwrap();
+        let key = parse_key_hex(vector["key_hex"].as_str().unwrap()).unwrap();
+        let h = Header {
+            packet_type: vector["header"]["packet_type"].as_u64().unwrap() as u8,
+            device_id: vector["header"]["device_id"].as_u64().unwrap() as u32,
+            session_id: vector["header"]["session_id"].as_u64().unwrap() as u32,
+            sequence: vector["header"]["sequence"].as_u64().unwrap() as u32,
+            timestamp_ms: vector["header"]["timestamp_ms"].as_u64().unwrap(),
+        };
+        let payload = hex::decode(vector["payload_hex"].as_str().unwrap()).unwrap();
+        let t = Telemetry {
+            flags: payload[0],
+            heart_rate: payload[1],
+            battery_pct: payload[2],
+            resting_hr: payload[3],
+        };
+        let expected = hex::decode(vector["packet_hex"].as_str().unwrap()).unwrap();
+
+        assert_eq!(encode_packet(&Cipher::new(&key), &h, &t), expected);
+        let (decoded_header, decoded_payload) = decode_packet(&Cipher::new(&key), &expected).unwrap();
+        assert_eq!(decoded_header, h);
+        assert_eq!(decoded_payload, t);
+    }
+
+    #[test]
     fn tampered_header_fails_auth() {
         let h = Header {
             packet_type: PACKET_TELEMETRY,

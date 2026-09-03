@@ -1,0 +1,19 @@
+{
+  "name": "telemetry-v1-basic",
+  "description": "ChaCha20-Poly1305 telemetry packet from protocol/protocol.md section 7",
+  "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "header": {
+    "magic_hex": "5042",
+    "version": 1,
+    "packet_type": 1,
+    "device_id": 1,
+    "session_id": 287454020,
+    "sequence": 1,
+    "timestamp_ms": 1700000000000
+  },
+  "nonce_hex": "010000004433221101000000",
+  "payload_hex": "07485533",
+  "ciphertext_hex": "a5b72a26",
+  "tag_hex": "10bdfeb65f8eb2327d362c3982c0e553",
+  "packet_hex": "504201010100000044332211010000000068e5cf8b010000a5b72a2610bdfeb65f8eb2327d362c3982c0e553"
+}

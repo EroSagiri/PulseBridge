@@ -111,5 +111,6 @@ timestamp  = 1700000000000  (0x18BCFE56800)
 payload    = flags 0x07, hr 72, battery 85, resting_hr 51
 ```
 
-`server/src/protocol.rs` contains this as a unit test; keep the Kotlin encoder
-byte-compatible with it.
+The complete canonical packet, including nonce, ciphertext and tag, is stored
+in `protocol/test-vectors/telemetry-v1.json`. The Rust and Kotlin codec tests
+must remain byte-compatible with that fixture.

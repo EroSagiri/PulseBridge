@@ -122,6 +122,12 @@ thing that could disturb it.
 Everything downstream — the bundled dashboard, a VRChat OSC bridge, Home
 Assistant — is expected to use the WebSocket and nothing else.
 
+The subscriber compatibility rules and v1 message shapes are documented in
+[protocol/websocket-v1.md](protocol/websocket-v1.md). The UDP encryption
+fixture is kept independently in
+[protocol/test-vectors/telemetry-v1.json](protocol/test-vectors/telemetry-v1.json)
+and is checked by both the Rust and Android codecs.
+
 ```
 ws://host:8080/ws
 ```
@@ -210,11 +216,14 @@ instead of `{}` to keep the BPM field three characters wide with leading zeroes.
 
 ```
 protocol/protocol.md      the wire format; the contract between the two sides
+protocol/test-vectors/    canonical UDP v1 fixtures checked by both codecs
+protocol/websocket-v1.md  subscriber JSON compatibility and message shapes
 server/src/protocol.rs    codec + replay window, with the spec test vector
 server/src/state.rs       device presence and the metric bus
 server/src/http.rs        WebSocket and REST subscribers
 server/src/bin/           simulator
 shared/pulsebridge-api/   typed subscriber contract shared by server and clients
+server/web/embed.*        Minimal, Compact, Card and Live Embed Kit pages
 vrchat-bridge/            standalone WebSocket → local VRChat OSC adapter
 android/…/garmin/         Multi-Link framing and GATT client
 android/…/ble/            standard Heart Rate Service client
