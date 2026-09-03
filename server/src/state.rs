@@ -49,9 +49,10 @@ impl Device {
             device_id,
             presence,
             age_ms: age,
-            // A device that has gone quiet must not keep reporting its last
-            // reading as if it were current.
-            heart_rate: if presence == Presence::Offline { None } else { self.heart_rate },
+            // A reading is current only while packets are arriving within the
+            // online window. Once the stream is stale, expose no heart rate so
+            // consumers cannot mistake the last sample for a live value.
+            heart_rate: if presence == Presence::Online { self.heart_rate } else { None },
             // Resting rate is a property of the wearer, not of the live link,
             // so it survives the device going quiet.
             resting_hr: self.resting_hr,

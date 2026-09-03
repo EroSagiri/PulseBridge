@@ -155,8 +155,8 @@ GET /api/device/:id
 ```
 
 `presence` is `online` under 15 s, `stale` under 60 s, `offline` beyond that.
-When a device is offline `heart_rate` is `null` — deliberately, so no consumer
-can mistake the last known value for the current one. `resting_hr` is `null`
+When a device is stale or offline `heart_rate` is `null` — deliberately, so no
+consumer can mistake the last known value for the current one. `resting_hr` is `null`
 when the source does not report one, and unlike the live value it survives the
 device going quiet, because it describes the wearer rather than the link.
 

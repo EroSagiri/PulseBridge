@@ -74,7 +74,9 @@ function render() {
   }
   devicesEl.innerHTML = '';
   for (const d of [...state.values()].sort((a, b) => a.device_id - b.device_id)) {
-    const live = d.presence !== 'offline' && d.heart_rate != null;
+    // Stale data is not live data. The server clears heart_rate for both
+    // stale and offline snapshots, but keep this guard here for old servers.
+    const live = d.presence === 'online' && d.heart_rate != null;
     const card = document.createElement('div');
     card.className = 'card';
     // Sync the pulse animation to the reported rate so the page reads as live.
