@@ -160,6 +160,33 @@ consumer can mistake the last known value for the current one. `resting_hr` is `
 when the source does not report one, and unlike the live value it survives the
 device going quiet, because it describes the wearer rather than the link.
 
+## Embed Kit
+
+The first Embed Kit layouts reuse the same `/ws` contract and filter one
+controlled device in the browser:
+
+```
+/embed/{device_id}/minimal
+/embed/{device_id}/compact
+/embed/{device_id}/card
+/embed/{device_id}/live
+```
+
+`minimal` is a small heart-rate readout, `compact` is a widget-sized card,
+`card` is a larger status card, and `live` is a transparent overlay suitable
+for an OBS Browser Source. The Live layout estimates a pulse animation from
+`60 / BPM`; it is not synchronized to real RR intervals.
+
+Optional query parameters include `theme=auto|dark|light`,
+`transparent=1`, `show_name=0`, `show_status=0`, and `animate=0`. The current
+`show_name` value is the temporary label `Device {id}`. Avatar, profile and
+heart-rate-zone data are not present yet, so `show_avatar` and `show_zone` do
+not invent or display those fields.
+
+The current target is a numeric `device_id` for local or otherwise controlled
+use. It is not a public identity or privacy boundary; do not expose arbitrary
+device IDs on the public internet until Profile and Visibility are implemented.
+
 ## VRChat local bridge
 
 The VRChat adapter is an independent project in `vrchat-bridge/`. It consumes

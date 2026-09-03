@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PulseBridge Embed</title>
+<link rel="stylesheet" href="/embed.css">
+</head>
+<body>
+  <main id="embed" data-layout="minimal" aria-live="polite">
+    <div class="identity" id="identity"></div>
+    <div class="reading">
+      <span class="heart" id="heart" aria-hidden="true">♥</span>
+      <span class="bpm" id="bpm">--</span>
+      <span class="unit">BPM</span>
+    </div>
+    <div class="status" id="status">OFFLINE</div>
+    <div class="details" id="details"></div>
+  </main>
+  <div class="sr-only" id="message">Connecting to PulseBridge…</div>
+  <script src="/embed.js"></script>
+</body>
+</html>
