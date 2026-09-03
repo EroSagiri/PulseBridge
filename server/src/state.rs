@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,6 +21,10 @@ pub fn now_ms() -> u64 {
 
 struct Device {
     session_id: u32,
+    /// Sessions that have been observed and retired must never become active
+    /// again. Keeping this set prevents captured packets from an old session
+    /// from resetting the active replay window.
+    retired_sessions: HashSet<u32>,
     replay: ReplayWindow,
     addr: SocketAddr,
     last_seen_ms: u64,
@@ -98,6 +102,7 @@ impl Store {
         let mut devices = self.devices.lock().unwrap();
         let dev = devices.entry(h.device_id).or_insert_with(|| Device {
             session_id: h.session_id,
+            retired_sessions: HashSet::new(),
             replay: ReplayWindow::default(),
             addr,
             last_seen_ms: 0,
@@ -112,9 +117,14 @@ impl Store {
             gaps: 0,
         });
 
-        // A new session means the client restarted: drop the old replay state
-        // instead of rejecting every packet until the sequence catches up.
+        // A new, never-seen session means the client restarted. Retire the
+        // previous session permanently; an old session packet must never be
+        // allowed to switch the device back and reset this replay window.
         if dev.session_id != h.session_id {
+            if dev.retired_sessions.contains(&h.session_id) {
+                return Accepted::Replay;
+            }
+            dev.retired_sessions.insert(dev.session_id);
             dev.session_id = h.session_id;
             dev.replay = ReplayWindow::default();
             dev.highest_seq = 0;
@@ -178,5 +188,42 @@ impl Store {
         let now = now_ms();
         let devices = self.devices.lock().unwrap();
         devices.get(&device_id).map(|d| d.snapshot(device_id, now))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{Header, Telemetry, FLAG_HR_VALID};
+
+    fn header(session_id: u32, sequence: u32) -> Header {
+        Header {
+            packet_type: 1,
+            device_id: 7,
+            session_id,
+            sequence,
+            timestamp_ms: now_ms(),
+        }
+    }
+
+    fn telemetry(bpm: u8) -> Telemetry {
+        Telemetry { flags: FLAG_HR_VALID, heart_rate: bpm, battery_pct: 0xff, resting_hr: 0 }
+    }
+
+    #[test]
+    fn retired_session_cannot_reset_replay_window() {
+        let store = Store::new();
+        let addr = "127.0.0.1:9999".parse().unwrap();
+
+        assert!(matches!(store.ingest(&header(10, 1), &telemetry(70), addr), Accepted::Ok(Some(_))));
+        assert!(matches!(store.ingest(&header(20, 1), &telemetry(80), addr), Accepted::Ok(Some(_))));
+
+        // A captured packet from the retired session must not switch the
+        // device back to session 10.
+        assert!(matches!(store.ingest(&header(10, 2), &telemetry(71), addr), Accepted::Replay));
+
+        // Session 20 remains active and its replay window remains intact.
+        assert!(matches!(store.ingest(&header(20, 1), &telemetry(80), addr), Accepted::Replay));
+        assert!(matches!(store.ingest(&header(20, 2), &telemetry(81), addr), Accepted::Ok(Some(_))));
     }
 }

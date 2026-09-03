@@ -76,8 +76,11 @@ check `hr_valid` first.
   bitmap** of already-seen sequences below it. UDP reorders, so a strictly
   increasing check would drop legitimate packets.
 * A packet older than `highest_seq - 64` is dropped.
-* A **new `session_id`** for a known device replaces the old session state.
-  This is how an app restart recovers.
+* A **new, never-before-seen `session_id`** for a known device replaces the
+  active session state. The old session is retired permanently for that
+  device. A packet from a retired session is rejected as replay and MUST NOT
+  reset the active replay window. This is how an app restart recovers without
+  allowing captured packets from an older session to switch the device back.
 
 ## 5. Address rebinding
 
