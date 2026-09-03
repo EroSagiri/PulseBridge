@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.sagiri.pulsebridge.ble.HrScanner
 import me.sagiri.pulsebridge.service.BridgeService
+import me.sagiri.pulsebridge.service.StartupScheduler
 import java.security.SecureRandom
 import java.util.Locale
 
@@ -55,8 +56,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val prefs = Prefs(this)
+        StartupScheduler.sync(this, prefs.autoStart)
         setContent {
-            MaterialTheme { Screen(Prefs(this)) }
+            MaterialTheme { Screen(prefs) }
         }
     }
 }
@@ -307,6 +310,7 @@ private fun Screen(prefs: Prefs) {
             Switch(checked = autoStart, onCheckedChange = {
                 autoStart = it
                 prefs.autoStart = it
+                StartupScheduler.sync(context, it)
             })
         }
         if (!isIgnoringBatteryOptimizations(context)) {

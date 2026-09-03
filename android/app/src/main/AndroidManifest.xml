@@ -40,12 +40,29 @@
 
         <service
             android:name=".service.BridgeService"
+            android:directBootAware="true"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
-        <receiver android:name=".service.BootReceiver" android:exported="true">
-            <intent-filter>
+        <service
+            android:name=".service.StartupJobService"
+            android:directBootAware="true"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <receiver
+            android:name=".service.BootReceiver"
+            android:directBootAware="true"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.USER_UNLOCKED" />
+                <action android:name="android.intent.action.USER_PRESENT" />
+                <action android:name="oplus.intent.action.BOOT_COMPLETED" />
+                <action android:name="oppo.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
     </application>

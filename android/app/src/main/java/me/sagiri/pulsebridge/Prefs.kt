@@ -1,6 +1,7 @@
 package me.sagiri.pulsebridge
 
 import android.content.Context
+import android.os.UserManager
 import java.security.SecureRandom
 
 /**
@@ -10,7 +11,21 @@ import java.security.SecureRandom
  */
 class Prefs(context: Context) {
 
-    private val sp = context.getSharedPreferences("pulsebridge", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val deviceContext = appContext.createDeviceProtectedStorageContext()
+
+    init {
+        // BOOT_COMPLETED is delayed by some OEMs until the app is opened.  The
+        // earlier LOCKED_BOOT_COMPLETED broadcast can only read device-protected
+        // storage, so move the small bridge configuration there while the user
+        // is unlocked.  This also migrates existing installations in place.
+        val users = appContext.getSystemService(UserManager::class.java)
+        if (!appContext.isDeviceProtectedStorage && users?.isUserUnlocked != false) {
+            deviceContext.moveSharedPreferencesFrom(appContext, PREFS_NAME)
+        }
+    }
+
+    private val sp = deviceContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     var serverHost: String
         get() = sp.getString(KEY_HOST, "") ?: ""
@@ -65,6 +80,7 @@ class Prefs(context: Context) {
         serverHost.isNotEmpty() && keyHex.length == 64 && watchAddress != null
 
     companion object {
+        private const val PREFS_NAME = "pulsebridge"
         private const val KEY_HOST = "server_host"
         private const val KEY_PORT = "server_port"
         private const val KEY_DEVICE_ID = "device_id"

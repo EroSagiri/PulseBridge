@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,10 +14,12 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import me.sagiri.pulsebridge.BridgeState
 import me.sagiri.pulsebridge.HeartRateSource
@@ -38,8 +41,10 @@ class BridgeService : LifecycleService() {
     private lateinit var prefs: Prefs
     private var source: HeartRateSource? = null
     private var sender: UdpSender? = null
+    private var startupJob: Job? = null
     private var refreshJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var screenReceiverRegistered = false
     private val streamWatchdog = StreamWatchdog(
         stallAfterMs = STREAM_STALL_AFTER_MS,
         recoveryCooldownMs = STREAM_RECOVERY_COOLDOWN_MS,
@@ -84,26 +89,71 @@ class BridgeService : LifecycleService() {
 
         if (intent?.action == ACTION_STOP) {
             stopEverything()
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
 
-        if (source != null) return START_STICKY
+        if (source != null || startupJob?.isActive == true) return START_STICKY
 
+        // A service launched from a boot receiver must enter the foreground
+        // immediately. Bluetooth can still be OFF for a short time during boot,
+        // so keep this phase lightweight and initialise the pipeline only once
+        // the adapter is ready.
+        startForeground(NOTIFICATION_ID, buildNotification("waiting for Bluetooth", null))
+        BridgeState.update {
+            it.copy(
+                running = true,
+                startedAtMs = System.currentTimeMillis(),
+                sourceStatus = "waiting for Bluetooth",
+            )
+        }
+
+        startupJob = lifecycleScope.launch {
+            while (isActive) {
+                if (!prefs.isConfigured()) {
+                    Log.w(TAG, "bridge configuration unavailable at service start")
+                    stopEverything()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return@launch
+                }
+                if (isBluetoothReady()) {
+                    startPipeline()
+                    return@launch
+                }
+                updateStartupStatus("waiting for Bluetooth")
+                delay(STARTUP_RETRY_MS)
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun isBluetoothReady(): Boolean =
+        (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
+            ?.adapter
+            ?.isEnabled == true
+
+    private fun updateStartupStatus(status: String) {
+        BridgeState.update { it.copy(sourceStatus = status) }
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, buildNotification(status, null))
+    }
+
+    private fun startPipeline() {
+        if (source != null) return
         val address = prefs.watchAddress
         val host = prefs.serverHost
         val keyHex = prefs.keyHex
         if (address == null || host.isEmpty() || keyHex.length != 64) {
+            stopEverything()
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
-            return START_NOT_STICKY
+            return
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification("starting", null))
+        updateStartupStatus("starting")
         acquireWakeLock()
-
-        BridgeState.update {
-            it.copy(running = true, startedAtMs = System.currentTimeMillis())
-        }
 
         sender = UdpSender(
             host = host,
@@ -125,8 +175,10 @@ class BridgeService : LifecycleService() {
             }
         }
 
-        registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_ON))
-        return START_STICKY
+        if (!screenReceiverRegistered) {
+            registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_ON))
+            screenReceiverRegistered = true
+        }
     }
 
     private fun createSource(address: String): HeartRateSource = when (prefs.sourceMode) {
@@ -220,6 +272,8 @@ class BridgeService : LifecycleService() {
     }
 
     private fun stopEverything() {
+        startupJob?.cancel()
+        startupJob = null
         refreshJob?.cancel()
         refreshJob = null
         source?.stop()
@@ -228,7 +282,10 @@ class BridgeService : LifecycleService() {
         sender?.stop()
         sender = null
         releaseWakeLock()
-        runCatching { unregisterReceiver(screenReceiver) }
+        if (screenReceiverRegistered) {
+            runCatching { unregisterReceiver(screenReceiver) }
+            screenReceiverRegistered = false
+        }
         BridgeState.reset()
     }
 
@@ -324,14 +381,27 @@ class BridgeService : LifecycleService() {
 
     companion object {
         const val ACTION_STOP = "me.sagiri.pulsebridge.STOP"
+        private const val ACTION_START_AFTER_BOOT = "me.sagiri.pulsebridge.START_AFTER_BOOT"
+        private const val TAG = "PulseBridgeService"
         private const val CHANNEL_ID = "bridge"
         private const val NOTIFICATION_ID = 1
+        private const val STARTUP_RETRY_MS = 2_000L
         private const val STREAM_STALL_AFTER_MS = 30_000L
         private const val STREAM_RECOVERY_COOLDOWN_MS = 30_000L
         private const val NOTIFICATION_MIN_INTERVAL_MS = 10_000L
 
         fun start(context: Context) {
             val intent = Intent(context, BridgeService::class.java)
+            startForegroundService(context, intent)
+        }
+
+        fun startAfterBoot(context: Context) {
+            val intent = Intent(context, BridgeService::class.java)
+                .setAction(ACTION_START_AFTER_BOOT)
+            startForegroundService(context, intent)
+        }
+
+        private fun startForegroundService(context: Context, intent: Intent) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
