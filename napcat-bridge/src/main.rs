@@ -19,7 +19,6 @@ const DEFAULT_NICKNAME_FORMAT: &str = "June - 💓{bpm}";
 const DEFAULT_NICKNAME_IDLE: &str = "June";
 const DEFAULT_MIN_INTERVAL_MS: u64 = 0;
 const DEFAULT_NICKNAME_MIN_INTERVAL_MS: u64 = 60_000;
-const DEFAULT_MAX_HR: u64 = 201;
 const IDLE_RETRY: Duration = Duration::from_secs(10);
 const WS_RECONNECT_INITIAL: Duration = Duration::from_secs(1);
 const WS_RECONNECT_MAX: Duration = Duration::from_secs(30);
@@ -41,11 +40,11 @@ impl State {
 
     /// Full status text used for the custom online status wording
     /// (legacy channel and fallback when nickname updates fail).
-    fn status_text(self, format: &str, max_hr: u8, beat: bool) -> String {
+    fn status_text(self, format: &str, zones: &avatar::ZoneScheme, beat: bool) -> String {
         let heart = Self::heart(beat);
         match self {
             Self::Waiting => format!("{heart} -- BPM · connecting"),
-            Self::Live { bpm, .. } => fill(format, heart, zone_for(bpm, max_hr), bpm),
+            Self::Live { bpm, .. } => fill(format, heart, zone_for(bpm, zones), bpm),
             Self::NoData { .. } => format!("{heart} -- BPM · no data"),
             Self::Offline { .. } => format!("{heart} -- BPM · offline"),
         }
@@ -60,18 +59,8 @@ fn fill(template: &str, heart: &str, zone: &str, bpm: u8) -> String {
         .replace("{}", &bpm.to_string())
 }
 
-fn zone_for(bpm: u8, max_hr: u8) -> &'static str {
-    let boundary = |percent: u16| -> u8 {
-        ((u16::from(max_hr) * percent + 99) / 100) as u8
-    };
-    let thresholds = [boundary(60), boundary(70), boundary(80), boundary(90)];
-    match bpm {
-        value if value <= thresholds[0] => "Z1",
-        value if value <= thresholds[1] => "Z2",
-        value if value <= thresholds[2] => "Z3",
-        value if value <= thresholds[3] => "Z4",
-        _ => "Z5",
-    }
+fn zone_for(bpm: u8, zones: &avatar::ZoneScheme) -> &'static str {
+    zones.zone_for(u16::from(bpm)).as_str()
 }
 
 struct Selector {
@@ -135,7 +124,7 @@ struct Config {
     nickname_idle: String,
     min_interval: Duration,
     nickname_min_interval: Duration,
-    max_hr: u8,
+    zone_scheme: avatar::ZoneScheme,
     face_id: u64,
     face_type: u64,
     avatar_enabled: bool,
@@ -183,7 +172,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         nickname_idle: env_or("PB_NICKNAME_IDLE", DEFAULT_NICKNAME_IDLE),
         min_interval: Duration::from_millis(env_u64("PB_STATUS_MIN_INTERVAL_MS", DEFAULT_MIN_INTERVAL_MS)?),
         nickname_min_interval: Duration::from_millis(env_u64("PB_NICKNAME_MIN_INTERVAL_MS", DEFAULT_NICKNAME_MIN_INTERVAL_MS)?),
-        max_hr: env_u64("PB_MAX_HR", DEFAULT_MAX_HR)?.try_into().map_err(|_| "PB_MAX_HR must be between 1 and 255")?,
+        zone_scheme: avatar::default_zone_scheme().unwrap_or_else(|error| {
+            warn!(%error, "using default max-heart-rate zone scheme");
+            avatar::ZoneScheme::max_hr(200)
+        }),
         face_id: env_u64("NAPCAT_FACE_ID", 0)?,
         face_type: env_u64("NAPCAT_FACE_TYPE", 1)?,
         avatar_enabled: env_or("PB_AVATAR_ENABLED", "true").parse().map_err(|_| "PB_AVATAR_ENABLED must be true or false")?,
@@ -316,7 +308,7 @@ async fn updater_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver
                             && now.duration_since(last_sent_at) >= cfg.min_interval
                         {
                             let next_beat = !beat;
-                            let text = state.status_text(&cfg.status_format, cfg.max_hr, next_beat);
+                            let text = state.status_text(&cfg.status_format, &cfg.zone_scheme, next_beat);
                             // A failed update is not retried for this exact
                             // state; the next heart-rate state is authoritative.
                             last_status_state = Some(state);
@@ -334,7 +326,7 @@ async fn updater_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver
                             && last_nickname_state != Some(state)
                             && now.duration_since(last_nickname_attempt) >= cfg.nickname_min_interval
                         {
-                            let nickname = fill(&cfg.nickname_format, State::heart(beat), zone_for(bpm, cfg.max_hr), bpm);
+                            let nickname = fill(&cfg.nickname_format, State::heart(beat), zone_for(bpm, &cfg.zone_scheme), bpm);
                             // Mark before the request: a failed old state is not
                             // retried, and a newer state supersedes it.
                             last_nickname_state = Some(state);

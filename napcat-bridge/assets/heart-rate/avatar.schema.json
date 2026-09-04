@@ -94,9 +94,88 @@
           }
         }
       }
+    },
+    "zones": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "z1": { "$ref": "#/$defs/zone_override" },
+        "z2": { "$ref": "#/$defs/zone_override" },
+        "z3": { "$ref": "#/$defs/zone_override" },
+        "z4": { "$ref": "#/$defs/zone_override" },
+        "z5": { "$ref": "#/$defs/zone_override" }
+      }
     }
   },
   "$defs": {
+    "zone_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "background": { "type": "string", "minLength": 1 },
+        "region": { "$ref": "#/$defs/region_override" },
+        "arc": { "$ref": "#/$defs/arc_override" },
+        "font": { "type": "string", "minLength": 1 },
+        "font_size": { "type": "number", "exclusiveMinimum": 0 },
+        "effects": { "$ref": "#/$defs/effects_override" }
+      }
+    },
+    "region_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cx": { "type": "number" },
+        "cy": { "type": "number" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "rotation": { "type": "number" }
+      }
+    },
+    "arc_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "curvature": { "type": "number", "minimum": -1, "maximum": 1 },
+        "x_scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 }
+      }
+    },
+    "effects_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fill": { "$ref": "#/$defs/color" },
+        "highlight": { "$ref": "#/$defs/color" },
+        "outline": { "$ref": "#/$defs/outline_override" },
+        "glow": { "$ref": "#/$defs/glow_override" },
+        "inner_shadow": { "$ref": "#/$defs/shadow_override" }
+      }
+    },
+    "outline_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": { "$ref": "#/$defs/color" },
+        "width": { "type": "integer", "minimum": 0, "maximum": 32 }
+      }
+    },
+    "glow_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": { "$ref": "#/$defs/color" },
+        "radius": { "type": "integer", "minimum": 0, "maximum": 64 }
+      }
+    },
+    "shadow_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "color": { "$ref": "#/$defs/color" },
+        "offset_x": { "type": "integer", "minimum": -64, "maximum": 64 },
+        "offset_y": { "type": "integer", "minimum": -64, "maximum": 64 },
+        "blur": { "type": "integer", "minimum": 0, "maximum": 64 }
+      }
+    },
     "color": {
       "type": "string",
       "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",

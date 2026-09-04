@@ -1,7 +1,10 @@
 use std::{fs, path::PathBuf, process::ExitCode};
 
 use clap::Parser;
-use pulsebridge_napcat_bridge::avatar::{AvatarGenerator, AvatarOutput, DEFAULT_OUTPUT_SIZE, DEFAULT_QUALITY};
+use pulsebridge_napcat_bridge::avatar::{
+    parse_custom_zones, parse_zone_algorithm, AvatarGenerator, AvatarOutput, ZoneScheme,
+    DEFAULT_OUTPUT_SIZE, DEFAULT_QUALITY,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -26,6 +29,24 @@ struct Args {
     /// Final square image size in pixels.
     #[arg(long, default_value_t = DEFAULT_OUTPUT_SIZE, value_name = "PIXELS")]
     size: u32,
+
+    /// Zone algorithm supplied at runtime; avatar.json contains visual data only.
+    #[arg(long, default_value = "max_hr", value_name = "ALGORITHM")]
+    zone_algorithm: String,
+
+    /// User's maximum heart rate, used by max_hr and lactate_threshold modes.
+    #[arg(long, default_value_t = 200, value_name = "BPM",
+        value_parser = clap::value_parser!(u16).range(1..=999))]
+    max_hr: u16,
+
+    /// User's lactate-threshold heart rate; required by lactate_threshold mode.
+    #[arg(long, value_name = "BPM",
+        value_parser = clap::value_parser!(u16).range(1..=999))]
+    lactate_threshold: Option<u16>,
+
+    /// Five inclusive ranges for custom mode, e.g. 50-100,101-140,141-160,161-180,181-200.
+    #[arg(long, value_name = "MIN-MAX,...")]
+    custom_zones: Option<String>,
 
     /// JPEG quality mode (1-100). This is the default output mode.
     #[arg(long, value_name = "1-100", conflicts_with = "max_bytes",
@@ -82,7 +103,38 @@ fn main() -> ExitCode {
         .max_bytes
         .map(AvatarOutput::MaxBytes)
         .unwrap_or_else(|| AvatarOutput::Quality(args.quality.unwrap_or(DEFAULT_QUALITY)));
-    let config = match AvatarGenerator::config_from_manifest(&args.manifest, args.size, output_mode) {
+    let algorithm = match parse_zone_algorithm(&args.zone_algorithm) {
+        Ok(algorithm) => algorithm,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let custom_zones = match args.custom_zones.as_deref().map(parse_custom_zones).transpose() {
+        Ok(custom_zones) => custom_zones,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let zone_scheme = match ZoneScheme::from_runtime(
+        algorithm,
+        args.max_hr,
+        args.lactate_threshold,
+        custom_zones,
+    ) {
+        Ok(zone_scheme) => zone_scheme,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let config = match AvatarGenerator::config_from_manifest_with_zones(
+        &args.manifest,
+        args.size,
+        output_mode,
+        zone_scheme,
+    ) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("error: {error}");

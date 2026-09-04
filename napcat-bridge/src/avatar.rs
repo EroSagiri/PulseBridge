@@ -22,6 +22,8 @@ struct AvatarManifest {
     font: PathBuf,
     font_size: f32,
     effects: EffectsConfig,
+    #[serde(default)]
+    zones: HashMap<String, AvatarOverride>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -31,6 +33,60 @@ struct TextRegion {
     width: f32,
     height: f32,
     rotation: f32,
+}
+
+#[derive(Clone, Deserialize, Default)]
+struct RegionOverride {
+    cx: Option<f32>,
+    cy: Option<f32>,
+    width: Option<f32>,
+    height: Option<f32>,
+    rotation: Option<f32>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+struct ArcOverride {
+    curvature: Option<f32>,
+    x_scale: Option<f32>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+struct ColorEffectOverride {
+    color: Option<String>,
+    width: Option<u32>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+struct GlowOverride {
+    color: Option<String>,
+    radius: Option<u32>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+struct ShadowOverride {
+    color: Option<String>,
+    offset_x: Option<i32>,
+    offset_y: Option<i32>,
+    blur: Option<u32>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+struct EffectsOverride {
+    fill: Option<String>,
+    highlight: Option<String>,
+    outline: Option<ColorEffectOverride>,
+    glow: Option<GlowOverride>,
+    inner_shadow: Option<ShadowOverride>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+struct AvatarOverride {
+    background: Option<PathBuf>,
+    region: Option<RegionOverride>,
+    arc: Option<ArcOverride>,
+    font: Option<PathBuf>,
+    font_size: Option<f32>,
+    effects: Option<EffectsOverride>,
 }
 
 impl TextRegion {
@@ -80,22 +136,220 @@ struct ShadowConfig {
     blur: u32,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneAlgorithm {
+    MaxHr,
+    LactateThreshold,
+    Custom,
+}
+
+impl Default for ZoneAlgorithm {
+    fn default() -> Self {
+        Self::MaxHr
+    }
+}
+
+pub fn parse_zone_algorithm(value: &str) -> Result<ZoneAlgorithm, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "max_hr" => Ok(ZoneAlgorithm::MaxHr),
+        "lactate_threshold" => Ok(ZoneAlgorithm::LactateThreshold),
+        "custom" => Ok(ZoneAlgorithm::Custom),
+        _ => Err(format!(
+            "invalid zone algorithm {value}; use max_hr, lactate_threshold, or custom"
+        )),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+pub struct ZoneRange {
+    pub min: u16,
+    pub max: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ZoneId {
+    Z1,
+    Z2,
+    Z3,
+    Z4,
+    Z5,
+    OutOfRange,
+}
+
+impl ZoneId {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Z1 => "Z1",
+            Self::Z2 => "Z2",
+            Self::Z3 => "Z3",
+            Self::Z4 => "Z4",
+            Self::Z5 => "Z5",
+            Self::OutOfRange => "--",
+        }
+    }
+
+    fn index(self) -> Option<usize> {
+        match self {
+            Self::Z1 => Some(0),
+            Self::Z2 => Some(1),
+            Self::Z3 => Some(2),
+            Self::Z4 => Some(3),
+            Self::Z5 => Some(4),
+            Self::OutOfRange => None,
+        }
+    }
+
+    fn all() -> [Self; 5] {
+        [Self::Z1, Self::Z2, Self::Z3, Self::Z4, Self::Z5]
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ZoneScheme {
+    pub algorithm: ZoneAlgorithm,
+    pub max_hr: u16,
+    pub lactate_threshold: Option<u16>,
+    ranges: [ZoneRange; 5],
+}
+
+impl ZoneScheme {
+    pub fn max_hr(max_hr: u16) -> Self {
+        let max_hr = u32::from(max_hr);
+        let boundary = |percent: u32| (max_hr * percent / 100).min(u32::from(u16::MAX)) as u16;
+        let z1_max = boundary(60);
+        let z2_max = boundary(70);
+        let z3_max = boundary(80);
+        let z4_max = boundary(90);
+        Self {
+            algorithm: ZoneAlgorithm::MaxHr,
+            max_hr: max_hr as u16,
+            lactate_threshold: None,
+            ranges: [
+                ZoneRange { min: boundary(50), max: z1_max },
+                ZoneRange { min: z1_max.saturating_add(1), max: z2_max },
+                ZoneRange { min: z2_max.saturating_add(1), max: z3_max },
+                ZoneRange { min: z3_max.saturating_add(1), max: z4_max },
+                ZoneRange { min: z4_max.saturating_add(1), max: max_hr as u16 },
+            ],
+        }
+    }
+
+    pub fn from_runtime(
+        algorithm: ZoneAlgorithm,
+        max_hr: u16,
+        lactate_threshold: Option<u16>,
+        custom_ranges: Option<[ZoneRange; 5]>,
+    ) -> Result<Self, String> {
+        if !(1..=999).contains(&max_hr) {
+            return Err("max_hr must be between 1 and 999".into());
+        }
+        match algorithm {
+            ZoneAlgorithm::MaxHr => Ok(Self::max_hr(max_hr)),
+            ZoneAlgorithm::LactateThreshold => {
+                let threshold = lactate_threshold
+                    .ok_or("lactate_threshold is required for lactate_threshold")?;
+                if !(1..=999).contains(&threshold) {
+                    return Err("lactate_threshold must be between 1 and 999".into());
+                }
+                if threshold >= max_hr {
+                    return Err("lactate_threshold must be below max_hr".into());
+                }
+                let boundary = |percent: u32| (u32::from(threshold) * percent / 100) as u16;
+                let z1_max = boundary(85);
+                let z2_max = boundary(90);
+                let z3_max = boundary(95);
+                Ok(Self {
+                    algorithm,
+                    max_hr,
+                    lactate_threshold: Some(threshold),
+                    ranges: [
+                        ZoneRange { min: 0, max: z1_max },
+                        ZoneRange { min: z1_max.saturating_add(1), max: z2_max },
+                        ZoneRange { min: z2_max.saturating_add(1), max: z3_max },
+                        ZoneRange { min: z3_max.saturating_add(1), max: threshold },
+                        ZoneRange { min: threshold.saturating_add(1), max: max_hr },
+                    ],
+                })
+            }
+            ZoneAlgorithm::Custom => {
+                let ranges = custom_ranges.ok_or("custom_zones is required for custom")?;
+                for (index, range) in ranges.iter().enumerate() {
+                    if range.min > range.max || range.max > 999 {
+                        return Err(format!("custom zone z{} is invalid", index + 1));
+                    }
+                }
+                Ok(Self {
+                    algorithm,
+                    max_hr,
+                    lactate_threshold,
+                    ranges,
+                })
+            }
+        }
+    }
+
+    pub fn zone_for(&self, bpm: u16) -> ZoneId {
+        self.ranges
+            .iter()
+            .enumerate()
+            .find(|(_, range)| bpm >= range.min && bpm <= range.max)
+            .map(|(index, _)| ZoneId::all()[index])
+            .unwrap_or(ZoneId::OutOfRange)
+    }
+}
+
+pub fn parse_custom_zones(value: &str) -> Result<[ZoneRange; 5], String> {
+    let values: Vec<ZoneRange> = value
+        .split(',')
+        .enumerate()
+        .map(|(index, item)| {
+            let (min, max) = item
+                .trim()
+                .split_once('-')
+                .ok_or_else(|| format!("custom zone {} must use MIN-MAX", index + 1))?;
+            let min = min
+                .trim()
+                .parse::<u16>()
+                .map_err(|_| format!("invalid minimum for custom zone {}", index + 1))?;
+            let max = max
+                .trim()
+                .parse::<u16>()
+                .map_err(|_| format!("invalid maximum for custom zone {}", index + 1))?;
+            Ok(ZoneRange { min, max })
+        })
+        .collect::<Result<_, String>>()?;
+    values.try_into().map_err(|values: Vec<ZoneRange>| {
+        format!(
+            "custom-zones requires exactly five MIN-MAX ranges, got {}",
+            values.len()
+        )
+    })
+}
+
 #[derive(Clone)]
 pub struct AvatarConfig {
-    pub background: PathBuf,
-    pub font: PathBuf,
     pub output_size: u32,
     pub output: AvatarOutput,
-    font_size: f32,
-    region: TextRegion,
-    arc: ArcConfig,
-    style: AvatarStyle,
+    pub zone_scheme: ZoneScheme,
+    base: ResolvedZoneConfig,
+    zones: [ResolvedZoneConfig; 5],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AvatarOutput {
     Quality(u8),
     MaxBytes(usize),
+}
+
+#[derive(Clone)]
+struct ResolvedZoneConfig {
+    background: PathBuf,
+    font: PathBuf,
+    font_size: f32,
+    region: TextRegion,
+    arc: ArcConfig,
+    style: AvatarStyle,
 }
 
 struct RenderRequest {
@@ -178,7 +432,16 @@ pub struct AvatarGenerator {
 
 impl AvatarGenerator {
     pub fn config_from_manifest(path: &Path, output_size: u32, output: AvatarOutput) -> Result<AvatarConfig, String> {
-        load_config(path, output_size, output)
+        Self::config_from_manifest_with_zones(path, output_size, output, ZoneScheme::max_hr(200))
+    }
+
+    pub fn config_from_manifest_with_zones(
+        path: &Path,
+        output_size: u32,
+        output: AvatarOutput,
+        zone_scheme: ZoneScheme,
+    ) -> Result<AvatarConfig, String> {
+        load_config(path, output_size, output, zone_scheme)
     }
 
     pub fn new(config: AvatarConfig) -> Result<Self, String> {
@@ -191,21 +454,27 @@ impl AvatarGenerator {
 }
 
 struct Renderer {
-    background: RgbaImage,
-    font: FontArc,
-    cache: HashMap<u16, Arc<Vec<u8>>>,
+    base: ZoneRenderer,
+    zones: [ZoneRenderer; 5],
+    zone_scheme: ZoneScheme,
+    cache: HashMap<(ZoneId, u16), Arc<Vec<u8>>>,
     no_data: Option<Arc<Vec<u8>>>,
     offline: Option<Arc<Vec<u8>>>,
-    region: TextRegion,
-    arc: ArcConfig,
-    style: AvatarStyle,
-    font_size: f32,
     output_size: u32,
     output: AvatarOutput,
 }
 
-impl Renderer {
-    fn new(config: AvatarConfig) -> Result<Self, String> {
+struct ZoneRenderer {
+    background: RgbaImage,
+    font: FontArc,
+    region: TextRegion,
+    arc: ArcConfig,
+    style: AvatarStyle,
+    font_size: f32,
+}
+
+impl ZoneRenderer {
+    fn new(config: ResolvedZoneConfig) -> Result<Self, String> {
         let source_background = image::open(&config.background)
             .map_err(|error| format!("cannot open {}: {error}", config.background.display()))?
             .to_rgba8();
@@ -223,17 +492,15 @@ impl Renderer {
         let font = FontArc::try_from_vec(font_bytes.clone())
             .map_err(|_| format!("cannot parse font {}", config.font.display()))?;
 
-        // fontdue performs a fast rasterizer sanity check. Actual compositing is
-        // done with imageproc/ab_glyph so strokes and shadows remain controllable.
         let _ = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default())
             .map_err(|error| format!("cannot initialize fontdue: {error}"))?
             .metrics('8', MASTER_SIZE as f32 * 0.22);
 
-        // cosmic-text initializes font discovery/fallback and shapes the fixed
-        // three-column placeholder. This keeps the renderer ready for CJK/Emoji
-        // labels without putting layout work on the Tokio executor.
         let mut font_system = FontSystem::new();
-        let mut buffer = Buffer::new(&mut font_system, Metrics::new(MASTER_SIZE as f32 * 0.22, MASTER_SIZE as f32 * 0.26));
+        let mut buffer = Buffer::new(
+            &mut font_system,
+            Metrics::new(MASTER_SIZE as f32 * 0.22, MASTER_SIZE as f32 * 0.26),
+        );
         let mut buffer = buffer.borrow_with(&mut font_system);
         buffer.set_size(Some(MASTER_SIZE as f32), Some(MASTER_SIZE as f32));
         buffer.set_text("000", Attrs::new(), Shaping::Advanced);
@@ -242,36 +509,55 @@ impl Renderer {
         Ok(Self {
             background,
             font,
-            cache: HashMap::new(),
-            no_data: None,
-            offline: None,
             region: config.region.scaled(coordinate_scale),
             arc: config.arc,
             style: config.style,
             font_size: config.font_size * coordinate_scale,
+        })
+    }
+}
+
+impl Renderer {
+    fn new(config: AvatarConfig) -> Result<Self, String> {
+        let mut zone_renderers = Vec::with_capacity(5);
+        for zone in config.zones {
+            zone_renderers.push(ZoneRenderer::new(zone)?);
+        }
+        let zones: [ZoneRenderer; 5] = zone_renderers
+            .try_into()
+            .map_err(|_| "avatar renderer expected five zone configurations".to_string())?;
+        Ok(Self {
+            base: ZoneRenderer::new(config.base)?,
+            zones,
+            zone_scheme: config.zone_scheme,
+            cache: HashMap::new(),
+            no_data: None,
+            offline: None,
             output_size: config.output_size,
             output: config.output,
         })
     }
 
     fn render(&mut self, bpm: u16) -> Result<Arc<Vec<u8>>, String> {
-        if let Some(cached) = self.cache.get(&bpm) {
+        let zone = self.zone_scheme.zone_for(bpm);
+        if let Some(cached) = self.cache.get(&(zone, bpm)) {
             return Ok(cached.clone());
         }
         let bytes = Arc::new(self.render_fresh(bpm)?);
-        self.cache.insert(bpm, bytes.clone());
+        self.cache.insert((zone, bpm), bytes.clone());
         Ok(bytes)
     }
 
     fn render_fresh(&self, bpm: u16) -> Result<Vec<u8>, String> {
-        self.render_label(&display_bpm(bpm)).map(|bytes| (*bytes).clone())
+        self.render_label(self.zone_scheme.zone_for(bpm), &display_bpm(bpm))
+            .map(|bytes| (*bytes).clone())
     }
 
     fn render_no_data(&mut self) -> Result<Arc<Vec<u8>>, String> {
         if let Some(cached) = &self.no_data {
             return Ok(cached.clone());
         }
-        let bytes = self.render_label("--")?;
+        let bytes = self.render_label(ZoneId::OutOfRange, "--")?;
         self.no_data = Some(bytes.clone());
         Ok(bytes)
     }
@@ -280,24 +566,28 @@ impl Renderer {
         if let Some(cached) = &self.offline {
             return Ok(cached.clone());
         }
-        let bytes = self.render_label("OFF")?;
+        let bytes = self.render_label(ZoneId::OutOfRange, "OFF")?;
         self.offline = Some(bytes.clone());
         Ok(bytes)
     }
 
-    fn render_label(&self, text: &str) -> Result<Arc<Vec<u8>>, String> {
-        let mut image = self.background.clone();
-        let region_width = self.region.width.round().max(1.0) as u32;
-        let region_height = self.region.height.round().max(1.0) as u32;
-        let font_size = self.font_size;
-        let font = self.font.clone();
+    fn render_label(&self, zone: ZoneId, text: &str) -> Result<Arc<Vec<u8>>, String> {
+        let zone_renderer = zone
+            .index()
+            .map(|index| &self.zones[index])
+            .unwrap_or(&self.base);
+        let mut image = zone_renderer.background.clone();
+        let region_width = zone_renderer.region.width.round().max(1.0) as u32;
+        let region_height = zone_renderer.region.height.round().max(1.0) as u32;
+        let font_size = zone_renderer.font_size;
+        let font = zone_renderer.font.clone();
         let scale = font_size;
         let characters: Vec<String> = text.chars().map(|ch| ch.to_string()).collect();
         let advances: Vec<f32> = characters
             .iter()
             .map(|character| {
                 let (width, _) = imageproc::drawing::text_size(scale, &font, character);
-                width as f32 * self.arc.x_scale
+                width as f32 * zone_renderer.arc.x_scale
             })
             .collect();
         let total_width: f32 = advances.iter().sum();
@@ -312,14 +602,14 @@ impl Renderer {
                 0.0
             };
             let center_y = region_height as f32 / 2.0
-                - self.arc.curvature * region_height as f32 * (1.0 - normalized_x * normalized_x);
+                - zone_renderer.arc.curvature * region_height as f32 * (1.0 - normalized_x * normalized_x);
             let angle = if total_width > 0.0 {
-                (4.0 * self.arc.curvature * region_height as f32 * normalized_x / total_width).atan()
+                (4.0 * zone_renderer.arc.curvature * region_height as f32 * normalized_x / total_width).atan()
             } else {
                 0.0
             };
-            let glyph = self.render_glyph(character, region_height, scale, &font)?;
-            let glyph_width = (glyph.width() as f32 * self.arc.x_scale).round().max(1.0) as u32;
+            let glyph = Self::render_glyph(zone_renderer, character, region_height, scale, &font)?;
+            let glyph_width = (glyph.width() as f32 * zone_renderer.arc.x_scale).round().max(1.0) as u32;
             let glyph = if glyph_width == glyph.width() {
                 glyph
             } else {
@@ -341,18 +631,18 @@ impl Renderer {
             cursor += advance;
         }
 
-        let layer = if self.region.rotation.abs() > f32::EPSILON {
+        let layer = if zone_renderer.region.rotation.abs() > f32::EPSILON {
             rotate_about_center(
                 &layer,
-                self.region.rotation.to_radians(),
+                zone_renderer.region.rotation.to_radians(),
                 Interpolation::Bilinear,
                 Border::Constant(Rgba([0, 0, 0, 0])),
             )
         } else {
             layer
         };
-        let x = self.region.cx.round() as i64 - i64::from(layer.width()) / 2;
-        let y = self.region.cy.round() as i64 - i64::from(layer.height()) / 2;
+        let x = zone_renderer.region.cx.round() as i64 - i64::from(layer.width()) / 2;
+        let y = zone_renderer.region.cy.round() as i64 - i64::from(layer.height()) / 2;
         imageops::overlay(&mut image, &layer, x, y);
 
         // Do not resize an already-compressed image. The master is cloned at
@@ -364,15 +654,15 @@ impl Renderer {
     }
 
     fn render_glyph(
-        &self,
+        zone_renderer: &ZoneRenderer,
         text: &str,
         region_height: u32,
         scale: f32,
         font: &FontArc,
     ) -> Result<RgbaImage, String> {
         let (text_width, text_height) = imageproc::drawing::text_size(scale, font, text);
-        let padding = self.style.outline_width
-            .saturating_add(self.style.glow.radius)
+        let padding = zone_renderer.style.outline_width
+            .saturating_add(zone_renderer.style.glow.radius)
             .saturating_add(4);
         let width = text_width.saturating_add(padding.saturating_mul(2)).max(1);
         let x = padding as i32;
@@ -380,26 +670,26 @@ impl Renderer {
         let mut layer = RgbaImage::new(width, region_height.max(1));
 
         let mut glow = RgbaImage::new(width, region_height.max(1));
-        draw_text_mut(&mut glow, self.style.glow.color, x, y, scale, font, text);
-        if self.style.glow.radius > 0 {
-            glow = imageops::blur(&glow, self.style.glow.radius as f32);
+        draw_text_mut(&mut glow, zone_renderer.style.glow.color, x, y, scale, font, text);
+        if zone_renderer.style.glow.radius > 0 {
+            glow = imageops::blur(&glow, zone_renderer.style.glow.radius as f32);
         }
         imageops::overlay(&mut layer, &glow, 0, 0);
 
-        let outline = self.style.outline_width as i32;
+        let outline = zone_renderer.style.outline_width as i32;
         for dx in -outline..=outline {
             for dy in -outline..=outline {
                 if dx * dx + dy * dy <= outline * outline {
-                    draw_text_mut(&mut layer, self.style.outline, x + dx, y + dy, scale, font, text);
+                    draw_text_mut(&mut layer, zone_renderer.style.outline, x + dx, y + dy, scale, font, text);
                 }
             }
         }
-        draw_text_mut(&mut layer, self.style.fill, x, y, scale, font, text);
+        draw_text_mut(&mut layer, zone_renderer.style.fill, x, y, scale, font, text);
 
         let mut mask = RgbaImage::new(width, region_height.max(1));
         draw_text_mut(&mut mask, Rgba([255, 255, 255, 255]), x, y, scale, font, text);
 
-        let shadow = &self.style.inner_shadow;
+        let shadow = &zone_renderer.style.inner_shadow;
         let mut inner_shadow = RgbaImage::new(width, region_height.max(1));
         draw_text_mut(
             &mut inner_shadow,
@@ -419,7 +709,7 @@ impl Renderer {
         imageops::overlay(&mut layer, &inner_shadow, 0, 0);
 
         let mut highlight = RgbaImage::new(width, region_height.max(1));
-        draw_text_mut(&mut highlight, self.style.highlight, x - 1, y - 1, scale, font, text);
+        draw_text_mut(&mut highlight, zone_renderer.style.highlight, x - 1, y - 1, scale, font, text);
         for (highlight_pixel, mask_pixel) in highlight.pixels_mut().zip(mask.pixels()) {
             highlight_pixel.0[3] = highlight_pixel.0[3].min(mask_pixel.0[3]);
         }
@@ -649,7 +939,38 @@ pub fn default_config() -> Result<AvatarConfig, String> {
         Ok(value) => AvatarOutput::MaxBytes(parse_byte_limit(&value)?),
         Err(_) => AvatarOutput::Quality(quality),
     };
-    load_config(manifest_path, output_size, output)
+    let zone_scheme = default_zone_scheme()?;
+    load_config(manifest_path, output_size, output, zone_scheme)
+}
+
+pub fn default_zone_scheme() -> Result<ZoneScheme, String> {
+    let algorithm = std::env::var("PB_ZONE_ALGORITHM")
+        .ok()
+        .map(|value| parse_zone_algorithm(&value))
+        .transpose()?
+        .unwrap_or_default();
+    let max_hr = std::env::var("PB_MAX_HR")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| "PB_MAX_HR must be between 1 and 999".to_string())
+        })
+        .transpose()?
+        .unwrap_or(200);
+    let lactate_threshold = std::env::var("PB_LACTATE_THRESHOLD")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| "PB_LACTATE_THRESHOLD must be a BPM value".to_string())
+        })
+        .transpose()?;
+    let custom_ranges = std::env::var("PB_CUSTOM_ZONES")
+        .ok()
+        .map(|value| parse_custom_zones(&value))
+        .transpose()?;
+    ZoneScheme::from_runtime(algorithm, max_hr, lactate_threshold, custom_ranges)
 }
 
 fn parse_byte_limit(value: &str) -> Result<usize, String> {
@@ -681,7 +1002,12 @@ fn parse_byte_limit(value: &str) -> Result<usize, String> {
     Ok(bytes)
 }
 
-fn load_config(path: &Path, output_size: u32, output: AvatarOutput) -> Result<AvatarConfig, String> {
+fn load_config(
+    path: &Path,
+    output_size: u32,
+    output: AvatarOutput,
+    zone_scheme: ZoneScheme,
+) -> Result<AvatarConfig, String> {
     if output_size == 0 || output_size > MASTER_SIZE {
         return Err(format!("output size must be between 1 and {MASTER_SIZE}"));
     }
@@ -691,60 +1017,103 @@ fn load_config(path: &Path, output_size: u32, output: AvatarOutput) -> Result<Av
         }
     }
     let manifest_path = path;
-    let manifest: AvatarManifest = serde_json::from_slice(
-        &fs::read(manifest_path).map_err(|error| format!("cannot read {}: {error}", manifest_path.display()))?,
-    ).map_err(|error| format!("cannot parse {}: {error}", manifest_path.display()))?;
-    if manifest.region.width <= 0.0 || manifest.region.height <= 0.0 {
-        return Err("avatar region width and height must be positive".into());
-    }
-    if manifest.font_size <= 0.0 {
-        return Err("avatar font_size must be positive".into());
-    }
-    if manifest.arc.x_scale <= 0.0 {
-        return Err("avatar arc x_scale must be positive".into());
-    }
+    let manifest = read_manifest(manifest_path)?;
     let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-    let background = if manifest.background.is_absolute() {
-        manifest.background
-    } else {
-        base.join(manifest.background)
-    };
-    let font = if manifest.font.is_absolute() {
-        manifest.font
-    } else {
-        base.join(manifest.font)
-    };
-    let style = AvatarStyle {
-        fill: parse_color(&manifest.effects.fill)?,
-        highlight: parse_color(&manifest.effects.highlight)?,
-        outline: parse_color(&manifest.effects.outline.color)?,
-        outline_width: manifest.effects.outline.width,
-        glow: GlowStyle {
-            color: parse_color(&manifest.effects.glow.color)?,
-            radius: manifest.effects.glow.radius,
-        },
-        inner_shadow: ShadowStyle {
-            color: parse_color(&manifest.effects.inner_shadow.color)?,
-            offset_x: manifest.effects.inner_shadow.offset_x,
-            offset_y: manifest.effects.inner_shadow.offset_y,
-            blur: manifest.effects.inner_shadow.blur,
-        },
-    };
+    let base_config = resolved_zone_config(base, &manifest, None)?;
+    let zones = ZoneId::all().map(|zone| {
+        resolved_zone_config(base, &manifest, manifest.zones.get(&zone.as_str().to_ascii_lowercase()))
+    });
+    let zones: Result<Vec<ResolvedZoneConfig>, String> = zones.into_iter().collect();
+    let zones: [ResolvedZoneConfig; 5] = zones?
+        .try_into()
+        .map_err(|_| "avatar manifest must produce five zone configurations".to_string())?;
     Ok(AvatarConfig {
-        background,
-        font,
         output_size,
         output,
-        font_size: manifest.font_size,
-        region: manifest.region,
-        arc: manifest.arc,
+        zone_scheme,
+        base: base_config,
+        zones,
+    })
+}
+
+fn read_manifest(path: &Path) -> Result<AvatarManifest, String> {
+    serde_json::from_slice(
+        &fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
+    )
+    .map_err(|error| format!("cannot parse {}: {error}", path.display()))
+}
+
+fn resolved_zone_config(
+    base: &Path,
+    manifest: &AvatarManifest,
+    overlay: Option<&AvatarOverride>,
+) -> Result<ResolvedZoneConfig, String> {
+    let region = overlay.and_then(|value| value.region.as_ref());
+    let arc = overlay.and_then(|value| value.arc.as_ref());
+    let effects = overlay.and_then(|value| value.effects.as_ref());
+    let outline = effects.and_then(|value| value.outline.as_ref());
+    let glow = effects.and_then(|value| value.glow.as_ref());
+    let inner_shadow = effects.and_then(|value| value.inner_shadow.as_ref());
+    let region = TextRegion {
+        cx: region.and_then(|value| value.cx).unwrap_or(manifest.region.cx),
+        cy: region.and_then(|value| value.cy).unwrap_or(manifest.region.cy),
+        width: region.and_then(|value| value.width).unwrap_or(manifest.region.width),
+        height: region.and_then(|value| value.height).unwrap_or(manifest.region.height),
+        rotation: region.and_then(|value| value.rotation).unwrap_or(manifest.region.rotation),
+    };
+    if region.width <= 0.0 || region.height <= 0.0 {
+        return Err("avatar region width and height must be positive".into());
+    }
+    let arc = ArcConfig {
+        curvature: arc.and_then(|value| value.curvature).unwrap_or(manifest.arc.curvature),
+        x_scale: arc.and_then(|value| value.x_scale).unwrap_or(manifest.arc.x_scale),
+    };
+    if arc.x_scale <= 0.0 {
+        return Err("avatar arc x_scale must be positive".into());
+    }
+    let font_size = overlay
+        .and_then(|value| value.font_size)
+        .unwrap_or(manifest.font_size);
+    if font_size <= 0.0 {
+        return Err("avatar font_size must be positive".into());
+    }
+    let style = AvatarStyle {
+        fill: parse_color(effects.and_then(|value| value.fill.as_deref()).unwrap_or(&manifest.effects.fill))?,
+        highlight: parse_color(effects.and_then(|value| value.highlight.as_deref()).unwrap_or(&manifest.effects.highlight))?,
+        outline: parse_color(outline.and_then(|value| value.color.as_deref()).unwrap_or(&manifest.effects.outline.color))?,
+        outline_width: outline.and_then(|value| value.width).unwrap_or(manifest.effects.outline.width),
+        glow: GlowStyle {
+            color: parse_color(glow.and_then(|value| value.color.as_deref()).unwrap_or(&manifest.effects.glow.color))?,
+            radius: glow.and_then(|value| value.radius).unwrap_or(manifest.effects.glow.radius),
+        },
+        inner_shadow: ShadowStyle {
+            color: parse_color(inner_shadow.and_then(|value| value.color.as_deref()).unwrap_or(&manifest.effects.inner_shadow.color))?,
+            offset_x: inner_shadow.and_then(|value| value.offset_x).unwrap_or(manifest.effects.inner_shadow.offset_x),
+            offset_y: inner_shadow.and_then(|value| value.offset_y).unwrap_or(manifest.effects.inner_shadow.offset_y),
+            blur: inner_shadow.and_then(|value| value.blur).unwrap_or(manifest.effects.inner_shadow.blur),
+        },
+    };
+    let background = overlay
+        .and_then(|value| value.background.as_ref())
+        .unwrap_or(&manifest.background);
+    let font = overlay.and_then(|value| value.font.as_ref()).unwrap_or(&manifest.font);
+    Ok(ResolvedZoneConfig {
+        background: resolve_path(base, background),
+        font: resolve_path(base, font),
+        font_size,
+        region,
+        arc,
         style,
     })
 }
 
+fn resolve_path(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() { path.to_path_buf() } else { base.join(path) }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::display_bpm;
+    use super::{display_bpm, parse_custom_zones, ZoneAlgorithm, ZoneId, ZoneRange, ZoneScheme};
 
     #[test]
     fn hides_only_leading_zeroes() {
@@ -752,5 +1121,63 @@ mod tests {
         assert_eq!(display_bpm(70), " 70");
         assert_eq!(display_bpm(100), "100");
         assert_eq!(display_bpm(105), "105");
+    }
+
+    #[test]
+    fn default_max_hr_scheme_uses_classic_boundaries() {
+        let scheme = ZoneScheme::max_hr(200);
+        assert_eq!(scheme.algorithm, ZoneAlgorithm::MaxHr);
+        assert_eq!(scheme.zone_for(99), ZoneId::OutOfRange);
+        assert_eq!(scheme.zone_for(100), ZoneId::Z1);
+        assert_eq!(scheme.zone_for(121), ZoneId::Z2);
+        assert_eq!(scheme.zone_for(141), ZoneId::Z3);
+        assert_eq!(scheme.zone_for(161), ZoneId::Z4);
+        assert_eq!(scheme.zone_for(181), ZoneId::Z5);
+        assert_eq!(scheme.zone_for(201), ZoneId::OutOfRange);
+    }
+
+    #[test]
+    fn custom_zone_gaps_are_out_of_range() {
+        let scheme = ZoneScheme {
+            algorithm: ZoneAlgorithm::Custom,
+            max_hr: 200,
+            lactate_threshold: None,
+            ranges: [
+                ZoneRange { min: 50, max: 100 },
+                ZoneRange { min: 120, max: 140 },
+                ZoneRange { min: 141, max: 160 },
+                ZoneRange { min: 161, max: 180 },
+                ZoneRange { min: 181, max: 200 },
+            ],
+        };
+        assert_eq!(scheme.zone_for(99), ZoneId::Z1);
+        assert_eq!(scheme.zone_for(110), ZoneId::OutOfRange);
+        assert_eq!(scheme.zone_for(201), ZoneId::OutOfRange);
+    }
+
+    #[test]
+    fn lactate_threshold_scheme_has_an_upper_out_of_range_state() {
+        let scheme = ZoneScheme::from_runtime(
+            ZoneAlgorithm::LactateThreshold,
+            200,
+            Some(170),
+            None,
+        )
+        .expect("valid lactate-threshold scheme");
+        assert_eq!(scheme.zone_for(144), ZoneId::Z1);
+        assert_eq!(scheme.zone_for(145), ZoneId::Z2);
+        assert_eq!(scheme.zone_for(154), ZoneId::Z3);
+        assert_eq!(scheme.zone_for(162), ZoneId::Z4);
+        assert_eq!(scheme.zone_for(171), ZoneId::Z5);
+        assert_eq!(scheme.zone_for(201), ZoneId::OutOfRange);
+    }
+
+    #[test]
+    fn parses_five_custom_ranges() {
+        let ranges = parse_custom_zones("50-100, 101-140,141-160,161-180,181-200")
+            .expect("valid custom ranges");
+        assert_eq!(ranges[0], ZoneRange { min: 50, max: 100 });
+        assert_eq!(ranges[4], ZoneRange { min: 181, max: 200 });
+        assert!(parse_custom_zones("50-100,101-140").is_err());
     }
 }
