@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs, path::{Path, PathBuf}, sync::{Arc, OnceLock}
 
 use ab_glyph::FontArc;
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
-use image::{codecs::jpeg::JpegEncoder, imageops, DynamicImage, Rgba, RgbaImage};
+use image::{codecs::jpeg::JpegEncoder, imageops, DynamicImage, GenericImageView, Rgba, RgbaImage};
 use imageproc::drawing::draw_text_mut;
 use imageproc::geometric_transformations::{rotate_about_center, Border, Interpolation};
 use serde::Deserialize;
@@ -15,15 +15,29 @@ pub const DEFAULT_QUALITY: u8 = 50;
 const AVATAR_MANIFEST: &str = "/opt/pulsebridge/assets/heart-rate/avatar.json";
 
 #[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AvatarManifest {
     background: PathBuf,
-    region: TextRegion,
-    arc: ArcConfig,
-    font: PathBuf,
-    font_size: f32,
-    effects: EffectsConfig,
+    #[serde(default)]
+    foreground: Option<ForegroundConfig>,
+    heart_rate: HeartRateConfig,
     #[serde(default)]
     zones: HashMap<String, AvatarOverride>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum HeartRateLayout {
+    #[default]
+    Combined,
+    Individual,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DisplayMode {
+    Text,
+    Sprite,
 }
 
 #[derive(Clone, Deserialize)]
@@ -42,6 +56,104 @@ struct RegionOverride {
     width: Option<f32>,
     height: Option<f32>,
     rotation: Option<f32>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HeartRateConfig {
+    #[serde(default)]
+    layout: HeartRateLayout,
+    defaults: DisplayConfig,
+    #[serde(default)]
+    positions: PositionOverrides,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct PositionOverrides {
+    #[serde(default)]
+    hundreds: DisplayOverride,
+    #[serde(default)]
+    tens: DisplayOverride,
+    #[serde(default)]
+    ones: DisplayOverride,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DisplayConfig {
+    mode: DisplayMode,
+    common: CommonConfig,
+    #[serde(default)]
+    text: Option<TextConfig>,
+    #[serde(default)]
+    sprite: Option<SpriteConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommonConfig {
+    region: TextRegion,
+    #[serde(default = "default_true")]
+    hide_leading_zeroes: bool,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextConfig {
+    font: PathBuf,
+    font_size: f32,
+    arc: ArcConfig,
+    effects: EffectsConfig,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpriteConfig {
+    #[serde(default)]
+    spacing: f32,
+    #[serde(default = "default_one")]
+    scale: f32,
+    #[serde(default)]
+    effects: SpriteEffectsConfig,
+    digits: HashMap<String, SpriteDigitConfig>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SpriteEffectsConfig {
+    #[serde(default = "default_one")]
+    opacity: f32,
+    tint: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpriteDigitConfig {
+    path: PathBuf,
+    #[serde(default)]
+    rect: Option<SpriteRect>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpriteRect {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForegroundConfig {
+    path: PathBuf,
+    #[serde(default)]
+    rect: Option<SpriteRect>,
+    #[serde(default)]
+    region: Option<TextRegion>,
+    #[serde(default = "default_one")]
+    opacity: f32,
 }
 
 #[derive(Clone, Deserialize, Default)]
@@ -80,13 +192,76 @@ struct EffectsOverride {
 }
 
 #[derive(Clone, Deserialize, Default)]
-struct AvatarOverride {
-    background: Option<PathBuf>,
+#[serde(deny_unknown_fields)]
+struct CommonOverride {
     region: Option<RegionOverride>,
-    arc: Option<ArcOverride>,
+    hide_leading_zeroes: Option<bool>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct TextOverride {
     font: Option<PathBuf>,
     font_size: Option<f32>,
+    arc: Option<ArcOverride>,
     effects: Option<EffectsOverride>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SpriteEffectsOverride {
+    opacity: Option<f32>,
+    tint: Option<Option<String>>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SpriteDigitOverride {
+    path: Option<PathBuf>,
+    rect: Option<Option<SpriteRect>>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SpriteOverride {
+    spacing: Option<f32>,
+    scale: Option<f32>,
+    effects: Option<SpriteEffectsOverride>,
+    digits: Option<HashMap<String, SpriteDigitOverride>>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct DisplayOverride {
+    mode: Option<DisplayMode>,
+    common: Option<CommonOverride>,
+    text: Option<TextOverride>,
+    sprite: Option<SpriteOverride>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct HeartRateOverride {
+    layout: Option<HeartRateLayout>,
+    defaults: Option<DisplayOverride>,
+    positions: Option<PositionOverrides>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ForegroundOverride {
+    path: Option<PathBuf>,
+    rect: Option<Option<SpriteRect>>,
+    region: Option<RegionOverride>,
+    opacity: Option<f32>,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AvatarOverride {
+    background: Option<PathBuf>,
+    foreground: Option<Option<ForegroundOverride>>,
+    heart_rate: Option<HeartRateOverride>,
 }
 
 impl TextRegion {
@@ -345,11 +520,60 @@ pub enum AvatarOutput {
 #[derive(Clone)]
 struct ResolvedZoneConfig {
     background: PathBuf,
+    foreground: Option<ResolvedForegroundConfig>,
+    heart_rate: ResolvedHeartRate,
+}
+
+#[derive(Clone)]
+struct ResolvedHeartRate {
+    layout: HeartRateLayout,
+    defaults: ResolvedDisplay,
+    positions: [ResolvedDisplay; 3],
+}
+
+#[derive(Clone)]
+struct ResolvedDisplay {
+    mode: DisplayMode,
+    common: ResolvedCommon,
+    text: Option<ResolvedText>,
+    sprite: Option<ResolvedSprite>,
+}
+
+#[derive(Clone)]
+struct ResolvedCommon {
+    region: TextRegion,
+    hide_leading_zeroes: bool,
+}
+
+#[derive(Clone)]
+struct ResolvedText {
     font: PathBuf,
     font_size: f32,
-    region: TextRegion,
     arc: ArcConfig,
     style: AvatarStyle,
+}
+
+#[derive(Clone)]
+struct ResolvedSprite {
+    spacing: f32,
+    scale: f32,
+    opacity: f32,
+    tint: Option<Rgba<u8>>,
+    digits: [ResolvedSpriteDigit; 10],
+}
+
+#[derive(Clone)]
+struct ResolvedSpriteDigit {
+    path: PathBuf,
+    rect: Option<SpriteRect>,
+}
+
+#[derive(Clone)]
+struct ResolvedForegroundConfig {
+    path: PathBuf,
+    rect: Option<SpriteRect>,
+    region: Option<TextRegion>,
+    opacity: f32,
 }
 
 struct RenderRequest {
@@ -466,11 +690,42 @@ struct Renderer {
 
 struct ZoneRenderer {
     background: RgbaImage,
+    heart_rate: HeartRateRenderer,
+    foreground: Option<ForegroundLayer>,
+}
+
+struct HeartRateRenderer {
+    layout: HeartRateLayout,
+    defaults: DisplayRenderer,
+    positions: [DisplayRenderer; 3],
+}
+
+struct DisplayRenderer {
+    mode: DisplayMode,
+    common: ResolvedCommon,
+    text: Option<TextRenderer>,
+    sprite: Option<SpriteRenderer>,
+}
+
+struct TextRenderer {
     font: FontArc,
-    region: TextRegion,
+    font_size: f32,
     arc: ArcConfig,
     style: AvatarStyle,
-    font_size: f32,
+}
+
+struct SpriteRenderer {
+    spacing: f32,
+    scale: f32,
+    opacity: f32,
+    tint: Option<Rgba<u8>>,
+    digits: [RgbaImage; 10],
+}
+
+struct ForegroundLayer {
+    image: RgbaImage,
+    region: TextRegion,
+    opacity: f32,
 }
 
 impl ZoneRenderer {
@@ -487,15 +742,137 @@ impl ZoneRenderer {
         }
         let coordinate_scale = MASTER_SIZE as f32 / source_background.width() as f32;
         let background = resize_linear(&source_background, MASTER_SIZE, MASTER_SIZE);
+        let heart_rate = HeartRateRenderer::new(config.heart_rate, coordinate_scale)?;
+        let foreground = config
+            .foreground
+            .map(|foreground| ForegroundLayer::new(foreground, coordinate_scale))
+            .transpose()?;
+
+        Ok(Self {
+            background,
+            heart_rate,
+            foreground,
+        })
+    }
+}
+
+impl HeartRateRenderer {
+    fn new(config: ResolvedHeartRate, coordinate_scale: f32) -> Result<Self, String> {
+        let defaults = DisplayRenderer::new(config.defaults, coordinate_scale)?;
+        let positions = config.positions.map(|display| DisplayRenderer::new(display, coordinate_scale))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_| "avatar renderer expected three heart-rate positions".to_string())?;
+        Ok(Self {
+            layout: config.layout,
+            defaults,
+            positions,
+        })
+    }
+
+    fn render(&self, image: &mut RgbaImage, label: &str) -> Result<(), String> {
+        match self.layout {
+            HeartRateLayout::Combined => self.render_display(image, &self.defaults, label),
+            HeartRateLayout::Individual => {
+                let digits: Vec<char> = label.chars().filter(|character| character.is_ascii_digit()).collect();
+                if digits.is_empty() {
+                    return self.render_display(image, &self.defaults, label);
+                }
+                let digits = if self.defaults.common.hide_leading_zeroes {
+                    digits
+                        .iter()
+                        .skip_while(|character| **character == '0')
+                        .copied()
+                        .collect::<Vec<_>>()
+                } else {
+                    digits
+                };
+                let digits = if digits.is_empty() { vec!['0'] } else { digits };
+                let start = 3usize.saturating_sub(digits.len());
+                for (slot, character) in self.positions.iter().skip(start).zip(digits.iter()) {
+                    self.render_display(image, slot, &character.to_string())?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn render_display(&self, image: &mut RgbaImage, display: &DisplayRenderer, label: &str) -> Result<(), String> {
+        let rendered = match display.mode {
+            DisplayMode::Text => display
+                .text
+                .as_ref()
+                .ok_or_else(|| "text mode requires a text configuration".to_string())
+                .and_then(|text| render_text_layer(display, text, label)),
+            DisplayMode::Sprite => {
+                let numeric_label = label.trim();
+                if !numeric_label.is_empty() && numeric_label.chars().all(|character| character.is_ascii_digit()) {
+                    display
+                        .sprite
+                        .as_ref()
+                        .ok_or_else(|| "sprite mode requires a sprite configuration".to_string())
+                        .and_then(|sprite| render_sprite_layer(display, sprite, numeric_label))
+                } else {
+                    if let Some(text) = &display.text {
+                        render_text_layer(display, text, label)
+                    } else {
+                        Ok(empty_display_layer(display))
+                    }
+                }
+            }
+        }?;
+        imageops::overlay(image, &rendered, display.common.region.cx.round() as i64 - i64::from(rendered.width()) / 2, display.common.region.cy.round() as i64 - i64::from(rendered.height()) / 2);
+        Ok(())
+    }
+}
+
+fn empty_display_layer(display: &DisplayRenderer) -> RgbaImage {
+    let width = display.common.region.width.round().max(1.0) as u32;
+    let height = display.common.region.height.round().max(1.0) as u32;
+    let layer = RgbaImage::new(width, height);
+    if display.common.region.rotation.abs() > f32::EPSILON {
+        rotate_about_center(
+            &layer,
+            display.common.region.rotation.to_radians(),
+            Interpolation::Bilinear,
+            Border::Constant(Rgba([0, 0, 0, 0])),
+        )
+    } else {
+        layer
+    }
+}
+
+impl DisplayRenderer {
+    fn new(config: ResolvedDisplay, coordinate_scale: f32) -> Result<Self, String> {
+        let text = config.text.map(|text| TextRenderer::new(text, coordinate_scale)).transpose()?;
+        let sprite = config.sprite.map(|sprite| SpriteRenderer::new(sprite)).transpose()?;
+        match config.mode {
+            DisplayMode::Text if text.is_none() => return Err("text mode requires a text configuration".into()),
+            DisplayMode::Sprite if sprite.is_none() => return Err("sprite mode requires a sprite configuration".into()),
+            _ => {}
+        }
+        Ok(Self {
+            mode: config.mode,
+            common: ResolvedCommon {
+                region: config.common.region.scaled(coordinate_scale),
+                hide_leading_zeroes: config.common.hide_leading_zeroes,
+            },
+            text,
+            sprite,
+        })
+    }
+}
+
+impl TextRenderer {
+    fn new(config: ResolvedText, coordinate_scale: f32) -> Result<Self, String> {
         let font_bytes = fs::read(&config.font)
             .map_err(|error| format!("cannot read {}: {error}", config.font.display()))?;
         let font = FontArc::try_from_vec(font_bytes.clone())
             .map_err(|_| format!("cannot parse font {}", config.font.display()))?;
-
         let _ = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default())
             .map_err(|error| format!("cannot initialize fontdue: {error}"))?
             .metrics('8', MASTER_SIZE as f32 * 0.22);
-
         let mut font_system = FontSystem::new();
         let mut buffer = Buffer::new(
             &mut font_system,
@@ -505,15 +882,74 @@ impl ZoneRenderer {
         buffer.set_size(Some(MASTER_SIZE as f32), Some(MASTER_SIZE as f32));
         buffer.set_text("000", Attrs::new(), Shaping::Advanced);
         buffer.shape_until_scroll(true);
-
         Ok(Self {
-            background,
             font,
-            region: config.region.scaled(coordinate_scale),
+            font_size: config.font_size * coordinate_scale,
             arc: config.arc,
             style: config.style,
-            font_size: config.font_size * coordinate_scale,
         })
+    }
+}
+
+impl SpriteRenderer {
+    fn new(config: ResolvedSprite) -> Result<Self, String> {
+        let mut digits = Vec::with_capacity(10);
+        for digit in config.digits {
+            let source = image::open(&digit.path)
+                .map_err(|error| format!("cannot open {}: {error}", digit.path.display()))?
+                .to_rgba8();
+            let image = if let Some(rect) = digit.rect {
+                validate_rect(rect, source.width(), source.height(), &digit.path)?;
+                source.view(rect.x, rect.y, rect.w, rect.h).to_image()
+            } else {
+                source
+            };
+            digits.push(image);
+        }
+        let digits: [RgbaImage; 10] = digits
+            .try_into()
+            .map_err(|_| "sprite renderer expected ten digit images".to_string())?;
+        Ok(Self {
+            spacing: config.spacing,
+            scale: config.scale,
+            opacity: config.opacity,
+            tint: config.tint,
+            digits,
+        })
+    }
+}
+
+impl ForegroundLayer {
+    fn new(config: ResolvedForegroundConfig, coordinate_scale: f32) -> Result<Self, String> {
+        let source = image::open(&config.path)
+            .map_err(|error| format!("cannot open {}: {error}", config.path.display()))?
+            .to_rgba8();
+        let source = if let Some(rect) = config.rect {
+            validate_rect(rect, source.width(), source.height(), &config.path)?;
+            source.view(rect.x, rect.y, rect.w, rect.h).to_image()
+        } else {
+            source
+        };
+        let region = config.region
+            .map(|region| region.scaled(coordinate_scale))
+            .unwrap_or(TextRegion { cx: MASTER_SIZE as f32 / 2.0, cy: MASTER_SIZE as f32 / 2.0, width: MASTER_SIZE as f32, height: MASTER_SIZE as f32, rotation: 0.0 });
+        let image = resize_linear(&source, region.width.round().max(1.0) as u32, region.height.round().max(1.0) as u32);
+        Ok(Self { image, region, opacity: config.opacity })
+    }
+
+    fn overlay(&self, image: &mut RgbaImage) {
+        let mut layer = self.image.clone();
+        if self.opacity < 1.0 {
+            for pixel in layer.pixels_mut() {
+                pixel.0[3] = (f32::from(pixel.0[3]) * self.opacity + 0.5) as u8;
+            }
+        }
+        let layer = if self.region.rotation.abs() > f32::EPSILON {
+            rotate_about_center(&layer, self.region.rotation.to_radians(), Interpolation::Bilinear, Border::Constant(Rgba([0, 0, 0, 0])))
+        } else {
+            layer
+        };
+        imageops::overlay(image, &layer, self.region.cx.round() as i64 - i64::from(layer.width()) / 2, self.region.cy.round() as i64 - i64::from(layer.height()) / 2);
     }
 }
 
@@ -577,73 +1013,10 @@ impl Renderer {
             .map(|index| &self.zones[index])
             .unwrap_or(&self.base);
         let mut image = zone_renderer.background.clone();
-        let region_width = zone_renderer.region.width.round().max(1.0) as u32;
-        let region_height = zone_renderer.region.height.round().max(1.0) as u32;
-        let font_size = zone_renderer.font_size;
-        let font = zone_renderer.font.clone();
-        let scale = font_size;
-        let characters: Vec<String> = text.chars().map(|ch| ch.to_string()).collect();
-        let advances: Vec<f32> = characters
-            .iter()
-            .map(|character| {
-                let (width, _) = imageproc::drawing::text_size(scale, &font, character);
-                width as f32 * zone_renderer.arc.x_scale
-            })
-            .collect();
-        let total_width: f32 = advances.iter().sum();
-        let mut cursor = (region_width as f32 - total_width) / 2.0;
-        let mut layer = RgbaImage::new(region_width, region_height);
-
-        for (character, advance) in characters.iter().zip(advances.iter()) {
-            let center_x = cursor + advance / 2.0;
-            let normalized_x = if total_width > 0.0 {
-                ((center_x - total_width / 2.0) / (total_width / 2.0)).clamp(-1.0, 1.0)
-            } else {
-                0.0
-            };
-            let center_y = region_height as f32 / 2.0
-                - zone_renderer.arc.curvature * region_height as f32 * (1.0 - normalized_x * normalized_x);
-            let angle = if total_width > 0.0 {
-                (4.0 * zone_renderer.arc.curvature * region_height as f32 * normalized_x / total_width).atan()
-            } else {
-                0.0
-            };
-            let glyph = Self::render_glyph(zone_renderer, character, region_height, scale, &font)?;
-            let glyph_width = (glyph.width() as f32 * zone_renderer.arc.x_scale).round().max(1.0) as u32;
-            let glyph = if glyph_width == glyph.width() {
-                glyph
-            } else {
-                imageops::resize(&glyph, glyph_width, glyph.height(), imageops::FilterType::Lanczos3)
-            };
-            let glyph = if angle.abs() > f32::EPSILON {
-                rotate_about_center(
-                    &glyph,
-                    angle,
-                    Interpolation::Bilinear,
-                    Border::Constant(Rgba([0, 0, 0, 0])),
-                )
-            } else {
-                glyph
-            };
-            let x = center_x.round() as i64 - i64::from(glyph.width()) / 2;
-            let y = center_y.round() as i64 - i64::from(glyph.height()) / 2;
-            imageops::overlay(&mut layer, &glyph, x, y);
-            cursor += advance;
+        zone_renderer.heart_rate.render(&mut image, text)?;
+        if let Some(foreground) = &zone_renderer.foreground {
+            foreground.overlay(&mut image);
         }
-
-        let layer = if zone_renderer.region.rotation.abs() > f32::EPSILON {
-            rotate_about_center(
-                &layer,
-                zone_renderer.region.rotation.to_radians(),
-                Interpolation::Bilinear,
-                Border::Constant(Rgba([0, 0, 0, 0])),
-            )
-        } else {
-            layer
-        };
-        let x = zone_renderer.region.cx.round() as i64 - i64::from(layer.width()) / 2;
-        let y = zone_renderer.region.cy.round() as i64 - i64::from(layer.height()) / 2;
-        imageops::overlay(&mut image, &layer, x, y);
 
         // Do not resize an already-compressed image. The master is cloned at
         // the beginning of this function, drawn at 1280x1280, and resized
@@ -652,70 +1025,229 @@ impl Renderer {
         let bytes = Arc::new(encode_output(&image, self.output)?);
         Ok(bytes)
     }
+}
 
-    fn render_glyph(
-        zone_renderer: &ZoneRenderer,
-        text: &str,
-        region_height: u32,
-        scale: f32,
-        font: &FontArc,
-    ) -> Result<RgbaImage, String> {
-        let (text_width, text_height) = imageproc::drawing::text_size(scale, font, text);
-        let padding = zone_renderer.style.outline_width
-            .saturating_add(zone_renderer.style.glow.radius)
-            .saturating_add(4);
-        let width = text_width.saturating_add(padding.saturating_mul(2)).max(1);
-        let x = padding as i32;
-        let y = ((region_height.saturating_sub(text_height)) / 2) as i32;
-        let mut layer = RgbaImage::new(width, region_height.max(1));
+fn render_text_layer(display: &DisplayRenderer, text_renderer: &TextRenderer, text: &str) -> Result<RgbaImage, String> {
+    let region_width = display.common.region.width.round().max(1.0) as u32;
+    let region_height = display.common.region.height.round().max(1.0) as u32;
+    let scale = text_renderer.font_size;
+    let characters: Vec<String> = text.chars().map(|character| character.to_string()).collect();
+    let advances: Vec<f32> = characters
+        .iter()
+        .map(|character| {
+            let (width, _) = imageproc::drawing::text_size(scale, &text_renderer.font, character);
+            width as f32 * text_renderer.arc.x_scale
+        })
+        .collect();
+    let total_width: f32 = advances.iter().sum();
+    let mut cursor = (region_width as f32 - total_width) / 2.0;
+    let mut layer = RgbaImage::new(region_width, region_height);
 
-        let mut glow = RgbaImage::new(width, region_height.max(1));
-        draw_text_mut(&mut glow, zone_renderer.style.glow.color, x, y, scale, font, text);
-        if zone_renderer.style.glow.radius > 0 {
-            glow = imageops::blur(&glow, zone_renderer.style.glow.radius as f32);
-        }
-        imageops::overlay(&mut layer, &glow, 0, 0);
-
-        let outline = zone_renderer.style.outline_width as i32;
-        for dx in -outline..=outline {
-            for dy in -outline..=outline {
-                if dx * dx + dy * dy <= outline * outline {
-                    draw_text_mut(&mut layer, zone_renderer.style.outline, x + dx, y + dy, scale, font, text);
-                }
-            }
-        }
-        draw_text_mut(&mut layer, zone_renderer.style.fill, x, y, scale, font, text);
-
-        let mut mask = RgbaImage::new(width, region_height.max(1));
-        draw_text_mut(&mut mask, Rgba([255, 255, 255, 255]), x, y, scale, font, text);
-
-        let shadow = &zone_renderer.style.inner_shadow;
-        let mut inner_shadow = RgbaImage::new(width, region_height.max(1));
-        draw_text_mut(
-            &mut inner_shadow,
-            shadow.color,
-            x + shadow.offset_x,
-            y + shadow.offset_y,
-            scale,
-            font,
-            text,
+    for (character, advance) in characters.iter().zip(advances.iter()) {
+        let center_x = cursor + advance / 2.0;
+        let normalized_x = if total_width > 0.0 {
+            ((center_x - total_width / 2.0) / (total_width / 2.0)).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+        let center_y = region_height as f32 / 2.0
+            - text_renderer.arc.curvature * region_height as f32 * (1.0 - normalized_x * normalized_x);
+        let angle = if total_width > 0.0 {
+            (4.0 * text_renderer.arc.curvature * region_height as f32 * normalized_x / total_width).atan()
+        } else {
+            0.0
+        };
+        let glyph = render_text_glyph(text_renderer, character, region_height, scale)?;
+        let glyph_width = (glyph.width() as f32 * text_renderer.arc.x_scale).round().max(1.0) as u32;
+        let glyph = if glyph_width == glyph.width() {
+            glyph
+        } else {
+            imageops::resize(&glyph, glyph_width, glyph.height(), imageops::FilterType::Lanczos3)
+        };
+        let glyph = if angle.abs() > f32::EPSILON {
+            rotate_about_center(
+                &glyph,
+                angle,
+                Interpolation::Bilinear,
+                Border::Constant(Rgba([0, 0, 0, 0])),
+            )
+        } else {
+            glyph
+        };
+        imageops::overlay(
+            &mut layer,
+            &glyph,
+            center_x.round() as i64 - i64::from(glyph.width()) / 2,
+            center_y.round() as i64 - i64::from(glyph.height()) / 2,
         );
-        if shadow.blur > 0 {
-            inner_shadow = imageops::blur(&inner_shadow, shadow.blur as f32);
-        }
-        for (shadow_pixel, mask_pixel) in inner_shadow.pixels_mut().zip(mask.pixels()) {
-            shadow_pixel.0[3] = shadow_pixel.0[3].min(mask_pixel.0[3]);
-        }
-        imageops::overlay(&mut layer, &inner_shadow, 0, 0);
+        cursor += advance;
+    }
 
-        let mut highlight = RgbaImage::new(width, region_height.max(1));
-        draw_text_mut(&mut highlight, zone_renderer.style.highlight, x - 1, y - 1, scale, font, text);
-        for (highlight_pixel, mask_pixel) in highlight.pixels_mut().zip(mask.pixels()) {
-            highlight_pixel.0[3] = highlight_pixel.0[3].min(mask_pixel.0[3]);
-        }
-        imageops::overlay(&mut layer, &highlight, 0, 0);
+    if display.common.region.rotation.abs() > f32::EPSILON {
+        Ok(rotate_about_center(
+            &layer,
+            display.common.region.rotation.to_radians(),
+            Interpolation::Bilinear,
+            Border::Constant(Rgba([0, 0, 0, 0])),
+        ))
+    } else {
         Ok(layer)
     }
+}
+
+fn render_text_glyph(
+    text_renderer: &TextRenderer,
+    text: &str,
+    region_height: u32,
+    scale: f32,
+) -> Result<RgbaImage, String> {
+    let (text_width, text_height) = imageproc::drawing::text_size(scale, &text_renderer.font, text);
+    let padding = text_renderer
+        .style
+        .outline_width
+        .saturating_add(text_renderer.style.glow.radius)
+        .saturating_add(4);
+    let width = text_width.saturating_add(padding.saturating_mul(2)).max(1);
+    let x = padding as i32;
+    let y = ((region_height.saturating_sub(text_height)) / 2) as i32;
+    let mut layer = RgbaImage::new(width, region_height.max(1));
+
+    let mut glow = RgbaImage::new(width, region_height.max(1));
+    draw_text_mut(&mut glow, text_renderer.style.glow.color, x, y, scale, &text_renderer.font, text);
+    if text_renderer.style.glow.radius > 0 {
+        glow = imageops::blur(&glow, text_renderer.style.glow.radius as f32);
+    }
+    imageops::overlay(&mut layer, &glow, 0, 0);
+
+    let outline = text_renderer.style.outline_width as i32;
+    for dx in -outline..=outline {
+        for dy in -outline..=outline {
+            if dx * dx + dy * dy <= outline * outline {
+                draw_text_mut(
+                    &mut layer,
+                    text_renderer.style.outline,
+                    x + dx,
+                    y + dy,
+                    scale,
+                    &text_renderer.font,
+                    text,
+                );
+            }
+        }
+    }
+    draw_text_mut(&mut layer, text_renderer.style.fill, x, y, scale, &text_renderer.font, text);
+
+    let mut mask = RgbaImage::new(width, region_height.max(1));
+    draw_text_mut(&mut mask, Rgba([255, 255, 255, 255]), x, y, scale, &text_renderer.font, text);
+
+    let shadow = &text_renderer.style.inner_shadow;
+    let mut inner_shadow = RgbaImage::new(width, region_height.max(1));
+    draw_text_mut(
+        &mut inner_shadow,
+        shadow.color,
+        x + shadow.offset_x,
+        y + shadow.offset_y,
+        scale,
+        &text_renderer.font,
+        text,
+    );
+    if shadow.blur > 0 {
+        inner_shadow = imageops::blur(&inner_shadow, shadow.blur as f32);
+    }
+    for (shadow_pixel, mask_pixel) in inner_shadow.pixels_mut().zip(mask.pixels()) {
+        shadow_pixel.0[3] = shadow_pixel.0[3].min(mask_pixel.0[3]);
+    }
+    imageops::overlay(&mut layer, &inner_shadow, 0, 0);
+
+    let mut highlight = RgbaImage::new(width, region_height.max(1));
+    draw_text_mut(&mut highlight, text_renderer.style.highlight, x - 1, y - 1, scale, &text_renderer.font, text);
+    for (highlight_pixel, mask_pixel) in highlight.pixels_mut().zip(mask.pixels()) {
+        highlight_pixel.0[3] = highlight_pixel.0[3].min(mask_pixel.0[3]);
+    }
+    imageops::overlay(&mut layer, &highlight, 0, 0);
+    Ok(layer)
+}
+
+fn render_sprite_layer(
+    display: &DisplayRenderer,
+    sprite_renderer: &SpriteRenderer,
+    text: &str,
+) -> Result<RgbaImage, String> {
+    let region_width = display.common.region.width.round().max(1.0) as u32;
+    let region_height = display.common.region.height.round().max(1.0) as u32;
+    let mut digits = Vec::new();
+    for character in text.chars() {
+        let index = character
+            .to_digit(10)
+            .ok_or_else(|| format!("sprite mode cannot render non-numeric character {character}"))?
+            as usize;
+        let source = &sprite_renderer.digits[index];
+        let target_height = (source.height() as f32 * sprite_renderer.scale)
+            .round()
+            .max(1.0)
+            .min(region_height as f32) as u32;
+        let target_width = (source.width() as f32 * target_height as f32 / source.height() as f32)
+            .round()
+            .max(1.0) as u32;
+        let mut digit = resize_linear(source, target_width, target_height);
+        for pixel in digit.pixels_mut() {
+            if let Some(tint) = sprite_renderer.tint {
+                pixel.0[0] = (u16::from(pixel.0[0]) * u16::from(tint.0[0]) / 255) as u8;
+                pixel.0[1] = (u16::from(pixel.0[1]) * u16::from(tint.0[1]) / 255) as u8;
+                pixel.0[2] = (u16::from(pixel.0[2]) * u16::from(tint.0[2]) / 255) as u8;
+            }
+            pixel.0[3] = (f32::from(pixel.0[3]) * sprite_renderer.opacity + 0.5) as u8;
+        }
+        digits.push(digit);
+    }
+
+    let spacing = sprite_renderer.spacing.max(0.0).round() as u32;
+    let mut total_width = digits.iter().map(RgbaImage::width).sum::<u32>();
+    total_width = total_width.saturating_add(spacing.saturating_mul(digits.len().saturating_sub(1) as u32));
+    if total_width > region_width {
+        let ratio = region_width as f32 / total_width as f32;
+        for digit in &mut digits {
+            let width = (digit.width() as f32 * ratio).round().max(1.0) as u32;
+            let height = (digit.height() as f32 * ratio).round().max(1.0) as u32;
+            *digit = resize_linear(digit, width, height);
+        }
+        total_width = digits.iter().map(RgbaImage::width).sum::<u32>();
+    }
+    let spacing = if digits.len() > 1 {
+        let remaining = region_width.saturating_sub(total_width);
+        spacing.min(remaining / (digits.len() - 1) as u32)
+    } else {
+        0
+    };
+    total_width = digits.iter().map(RgbaImage::width).sum::<u32>()
+        + spacing.saturating_mul(digits.len().saturating_sub(1) as u32);
+    let mut layer = RgbaImage::new(region_width, region_height);
+    let mut x = (region_width.saturating_sub(total_width) / 2) as i64;
+    for digit in digits {
+        let y = (region_height.saturating_sub(digit.height()) / 2) as i64;
+        imageops::overlay(&mut layer, &digit, x, y);
+        x += i64::from(digit.width() + spacing);
+    }
+    if display.common.region.rotation.abs() > f32::EPSILON {
+        Ok(rotate_about_center(
+            &layer,
+            display.common.region.rotation.to_radians(),
+            Interpolation::Bilinear,
+            Border::Constant(Rgba([0, 0, 0, 0])),
+        ))
+    } else {
+        Ok(layer)
+    }
+}
+
+fn validate_rect(rect: SpriteRect, width: u32, height: u32, path: &Path) -> Result<(), String> {
+    if rect.w == 0 || rect.h == 0 || rect.x.checked_add(rect.w).is_none_or(|right| right > width) || rect.y.checked_add(rect.h).is_none_or(|bottom| bottom > height) {
+        return Err(format!(
+            "sprite rect ({},{},{},{}) is outside {} ({}x{})",
+            rect.x, rect.y, rect.w, rect.h, path.display(), width, height
+        ));
+    }
+    Ok(())
 }
 
 fn display_bpm(bpm: u16) -> String {
@@ -1048,63 +1580,471 @@ fn resolved_zone_config(
     manifest: &AvatarManifest,
     overlay: Option<&AvatarOverride>,
 ) -> Result<ResolvedZoneConfig, String> {
-    let region = overlay.and_then(|value| value.region.as_ref());
-    let arc = overlay.and_then(|value| value.arc.as_ref());
-    let effects = overlay.and_then(|value| value.effects.as_ref());
-    let outline = effects.and_then(|value| value.outline.as_ref());
-    let glow = effects.and_then(|value| value.glow.as_ref());
-    let inner_shadow = effects.and_then(|value| value.inner_shadow.as_ref());
-    let region = TextRegion {
-        cx: region.and_then(|value| value.cx).unwrap_or(manifest.region.cx),
-        cy: region.and_then(|value| value.cy).unwrap_or(manifest.region.cy),
-        width: region.and_then(|value| value.width).unwrap_or(manifest.region.width),
-        height: region.and_then(|value| value.height).unwrap_or(manifest.region.height),
-        rotation: region.and_then(|value| value.rotation).unwrap_or(manifest.region.rotation),
+    let background = overlay.and_then(|value| value.background.as_ref()).unwrap_or(&manifest.background);
+    let heart_rate = resolve_heart_rate(base, &manifest.heart_rate, overlay.and_then(|value| value.heart_rate.as_ref()))?;
+    let foreground = resolve_foreground(base, manifest.foreground.as_ref(), overlay.and_then(|value| value.foreground.as_ref()))?;
+    Ok(ResolvedZoneConfig {
+        background: resolve_path(base, background),
+        foreground,
+        heart_rate,
+    })
+}
+
+fn resolve_heart_rate(
+    base: &Path,
+    config: &HeartRateConfig,
+    overlay: Option<&HeartRateOverride>,
+) -> Result<ResolvedHeartRate, String> {
+    let layout = overlay.and_then(|value| value.layout).unwrap_or(config.layout);
+    let defaults = resolve_display(base, &config.defaults, overlay.and_then(|value| value.defaults.as_ref()))?;
+    let zone_positions = overlay.and_then(|value| value.positions.as_ref());
+    let positions = [
+        resolve_position(base, &config.defaults, &config.positions.hundreds, overlay, zone_positions.map(|value| &value.hundreds))?,
+        resolve_position(base, &config.defaults, &config.positions.tens, overlay, zone_positions.map(|value| &value.tens))?,
+        resolve_position(base, &config.defaults, &config.positions.ones, overlay, zone_positions.map(|value| &value.ones))?,
+    ];
+    Ok(ResolvedHeartRate { layout, defaults, positions })
+}
+
+fn resolve_position(
+    base: &Path,
+    defaults: &DisplayConfig,
+    base_override: &DisplayOverride,
+    heart_rate_overlay: Option<&HeartRateOverride>,
+    position_overlay: Option<&DisplayOverride>,
+) -> Result<ResolvedDisplay, String> {
+    let mut display = resolve_display(base, defaults, Some(base_override))?;
+    if let Some(overlay) = heart_rate_overlay.and_then(|value| value.defaults.as_ref()) {
+        apply_display_override(base, &mut display, overlay)?;
+    }
+    if let Some(overlay) = position_overlay {
+        apply_display_override(base, &mut display, overlay)?;
+    }
+    Ok(display)
+}
+
+fn resolve_display(
+    base: &Path,
+    config: &DisplayConfig,
+    overlay: Option<&DisplayOverride>,
+) -> Result<ResolvedDisplay, String> {
+    let mut display = ResolvedDisplay {
+        mode: config.mode,
+        common: resolve_common(&config.common)?,
+        text: config.text.as_ref().map(|value| resolve_text(base, value)).transpose()?,
+        sprite: config.sprite.as_ref().map(|value| resolve_sprite(base, value)).transpose()?,
     };
+    if let Some(overlay) = overlay {
+        apply_display_override(base, &mut display, overlay)?;
+    }
+    validate_display(&display)
+}
+
+fn validate_display(display: &ResolvedDisplay) -> Result<ResolvedDisplay, String> {
+    match display.mode {
+        DisplayMode::Text if display.text.is_none() => Err("text mode requires a text configuration".into()),
+        DisplayMode::Sprite if display.sprite.is_none() => Err("sprite mode requires a sprite configuration".into()),
+        _ => Ok(display.clone()),
+    }
+}
+
+fn apply_display_override(
+    base: &Path,
+    display: &mut ResolvedDisplay,
+    overlay: &DisplayOverride,
+) -> Result<(), String> {
+    if let Some(mode) = overlay.mode {
+        display.mode = mode;
+    }
+    if let Some(common) = &overlay.common {
+        apply_common_override(&mut display.common, common)?;
+    }
+    if let Some(text) = &overlay.text {
+        if let Some(current) = &mut display.text {
+            apply_text_override(base, current, text)?;
+        } else {
+            display.text = Some(resolve_text_from_override(base, text)?);
+        }
+    }
+    if let Some(sprite) = &overlay.sprite {
+        if let Some(current) = &mut display.sprite {
+            apply_sprite_override(base, current, sprite)?;
+        } else {
+            display.sprite = Some(resolve_sprite_from_override(base, sprite)?);
+        }
+    }
+    *display = validate_display(display)?;
+    Ok(())
+}
+
+fn resolve_common(config: &CommonConfig) -> Result<ResolvedCommon, String> {
+    validate_region(&config.region)?;
+    Ok(ResolvedCommon {
+        region: config.region.clone(),
+        hide_leading_zeroes: config.hide_leading_zeroes,
+    })
+}
+
+fn apply_common_override(common: &mut ResolvedCommon, overlay: &CommonOverride) -> Result<(), String> {
+    if let Some(region) = &overlay.region {
+        apply_region_override(&mut common.region, region)?;
+    }
+    if let Some(value) = overlay.hide_leading_zeroes {
+        common.hide_leading_zeroes = value;
+    }
+    Ok(())
+}
+
+fn resolve_text(base: &Path, config: &TextConfig) -> Result<ResolvedText, String> {
+    validate_arc(&config.arc)?;
+    validate_font_size(config.font_size)?;
+    Ok(ResolvedText {
+        font: resolve_path(base, &config.font),
+        font_size: config.font_size,
+        arc: config.arc.clone(),
+        style: style_from_config(&config.effects)?,
+    })
+}
+
+fn resolve_text_from_override(base: &Path, overlay: &TextOverride) -> Result<ResolvedText, String> {
+    let font = overlay.font.as_ref().ok_or("text override requires font when no base text configuration exists")?;
+    let font_size = overlay.font_size.ok_or("text override requires font_size when no base text configuration exists")?;
+    let arc = overlay.arc.as_ref().ok_or("text override requires arc when no base text configuration exists")?;
+    let effects = overlay.effects.as_ref().ok_or("text override requires effects when no base text configuration exists")?;
+    let style = style_from_override(effects)?;
+    let arc = ArcConfig {
+        curvature: arc.curvature.ok_or("text override arc requires curvature")?,
+        x_scale: arc.x_scale.ok_or("text override arc requires x_scale")?,
+    };
+    validate_arc(&arc)?;
+    validate_font_size(font_size)?;
+    Ok(ResolvedText { font: resolve_path(base, font), font_size, arc, style })
+}
+
+fn apply_text_override(base: &Path, text: &mut ResolvedText, overlay: &TextOverride) -> Result<(), String> {
+    if let Some(font) = &overlay.font {
+        text.font = resolve_path(base, font);
+    }
+    if let Some(font_size) = overlay.font_size {
+        validate_font_size(font_size)?;
+        text.font_size = font_size;
+    }
+    if let Some(arc) = &overlay.arc {
+        apply_arc_override(&mut text.arc, arc)?;
+    }
+    if let Some(effects) = &overlay.effects {
+        apply_effects_override(&mut text.style, effects)?;
+    }
+    Ok(())
+}
+
+fn resolve_sprite(base: &Path, config: &SpriteConfig) -> Result<ResolvedSprite, String> {
+    validate_sprite_values(config.spacing, config.scale, config.effects.opacity)?;
+    let digits = resolve_digits(base, &config.digits)?;
+    Ok(ResolvedSprite {
+        spacing: config.spacing,
+        scale: config.scale,
+        opacity: config.effects.opacity,
+        tint: config.effects.tint.as_deref().map(parse_color).transpose()?,
+        digits,
+    })
+}
+
+fn resolve_sprite_from_override(base: &Path, overlay: &SpriteOverride) -> Result<ResolvedSprite, String> {
+    let digits = overlay.digits.as_ref().ok_or("sprite override requires digits 0-9 when no base sprite configuration exists")?;
+    let mut resolved = Vec::with_capacity(10);
+    for index in 0..10 {
+        let key = index.to_string();
+        let digit = digits.get(&key).ok_or_else(|| format!("sprite override is missing digit {index}"))?;
+        let path = digit.path.as_ref().ok_or_else(|| format!("sprite override digit {index} requires path"))?;
+        resolved.push(resolve_sprite_digit(base, path, digit.rect.as_ref().and_then(|value| *value))?);
+    }
+    let spacing = overlay.spacing.unwrap_or(0.0);
+    let scale = overlay.scale.unwrap_or(1.0);
+    let (opacity, tint) = resolve_sprite_effects(None, overlay.effects.as_ref())?;
+    validate_sprite_values(spacing, scale, opacity)?;
+    Ok(ResolvedSprite { spacing, scale, opacity, tint, digits: resolved.try_into().map_err(|_| "sprite renderer expected ten digit images".to_string())? })
+}
+
+fn apply_sprite_override(base: &Path, sprite: &mut ResolvedSprite, overlay: &SpriteOverride) -> Result<(), String> {
+    if let Some(spacing) = overlay.spacing {
+        sprite.spacing = spacing;
+    }
+    if let Some(scale) = overlay.scale {
+        sprite.scale = scale;
+    }
+    if let Some(effects) = &overlay.effects {
+        if let Some(opacity) = effects.opacity {
+            sprite.opacity = opacity;
+        }
+        if let Some(tint) = &effects.tint {
+            sprite.tint = tint.as_deref().map(parse_color).transpose()?;
+        }
+    }
+    if let Some(digits) = &overlay.digits {
+        for (key, digit) in digits {
+            let index = key.parse::<usize>().map_err(|_| format!("invalid sprite digit {key}"))?;
+            if index >= 10 {
+                return Err(format!("invalid sprite digit {key}"));
+            }
+            let current = &mut sprite.digits[index];
+            if let Some(path) = &digit.path {
+                current.path = resolve_path(base, path);
+            }
+            if let Some(rect) = &digit.rect {
+                current.rect = *rect;
+            }
+        }
+    }
+    validate_sprite_values(sprite.spacing, sprite.scale, sprite.opacity)
+}
+
+fn resolve_digits(base: &Path, digits: &HashMap<String, SpriteDigitConfig>) -> Result<[ResolvedSpriteDigit; 10], String> {
+    let mut resolved = Vec::with_capacity(10);
+    for index in 0..10 {
+        let key = index.to_string();
+        let digit = digits.get(&key).ok_or_else(|| format!("sprite configuration is missing digit {index}"))?;
+        resolved.push(resolve_sprite_digit(base, &digit.path, digit.rect)?);
+    }
+    resolved.try_into().map_err(|_| "sprite renderer expected ten digit images".to_string())
+}
+
+fn resolve_sprite_digit(base: &Path, path: &Path, rect: Option<SpriteRect>) -> Result<ResolvedSpriteDigit, String> {
+    Ok(ResolvedSpriteDigit { path: resolve_path(base, path), rect })
+}
+
+fn resolve_sprite_effects(
+    base: Option<&SpriteEffectsConfig>,
+    overlay: Option<&SpriteEffectsOverride>,
+) -> Result<(f32, Option<Rgba<u8>>), String> {
+    let opacity = overlay.and_then(|value| value.opacity)
+        .or_else(|| base.map(|value| value.opacity))
+        .unwrap_or(1.0);
+    let tint = if let Some(value) = overlay.and_then(|value| value.tint.as_ref()) {
+        value.as_deref().map(parse_color).transpose()?
+    } else {
+        base.and_then(|value| value.tint.as_deref()).map(parse_color).transpose()?
+    };
+    Ok((opacity, tint))
+}
+
+fn validate_sprite_values(spacing: f32, scale: f32, opacity: f32) -> Result<(), String> {
+    if spacing < 0.0 {
+        return Err("sprite spacing must not be negative".into());
+    }
+    if scale <= 0.0 {
+        return Err("sprite scale must be positive".into());
+    }
+    if !(0.0..=1.0).contains(&opacity) {
+        return Err("sprite opacity must be between 0 and 1".into());
+    }
+    Ok(())
+}
+
+fn resolve_foreground(
+    base: &Path,
+    config: Option<&ForegroundConfig>,
+    overlay: Option<&Option<ForegroundOverride>>,
+) -> Result<Option<ResolvedForegroundConfig>, String> {
+    let Some(overlay) = overlay else {
+        return config.map(|value| resolve_foreground_config(base, value)).transpose();
+    };
+    let Some(overlay) = overlay else {
+        return Ok(None);
+    };
+    let mut resolved = config
+        .map(|value| ResolvedForegroundConfig {
+            path: resolve_path(base, &value.path),
+            rect: value.rect,
+            region: value.region.clone(),
+            opacity: value.opacity,
+        });
+    if resolved.is_none() && overlay.path.is_none() {
+        return Err("foreground override requires path when no base foreground exists".into());
+    }
+    if let Some(path) = &overlay.path {
+        resolved.get_or_insert(ResolvedForegroundConfig {
+            path: resolve_path(base, path),
+            rect: None,
+            region: None,
+            opacity: 1.0,
+        }).path = resolve_path(base, path);
+    }
+    let resolved = resolved.as_mut().ok_or("invalid foreground override")?;
+    if let Some(rect) = &overlay.rect {
+        resolved.rect = *rect;
+    }
+    if let Some(region) = &overlay.region {
+        let mut current = resolved.region.clone().unwrap_or(TextRegion { cx: 640.0, cy: 640.0, width: 1280.0, height: 1280.0, rotation: 0.0 });
+        apply_region_override(&mut current, region)?;
+        resolved.region = Some(current);
+    }
+    if let Some(opacity) = overlay.opacity {
+        resolved.opacity = opacity;
+    }
+    validate_foreground(resolved).map(Some)
+}
+
+fn resolve_foreground_config(base: &Path, value: &ForegroundConfig) -> Result<ResolvedForegroundConfig, String> {
+    let resolved = ResolvedForegroundConfig {
+        path: resolve_path(base, &value.path),
+        rect: value.rect,
+        region: value.region.clone(),
+        opacity: value.opacity,
+    };
+    validate_foreground(&resolved)
+}
+
+fn validate_foreground(value: &ResolvedForegroundConfig) -> Result<ResolvedForegroundConfig, String> {
+    if !(0.0..=1.0).contains(&value.opacity) {
+        return Err("foreground opacity must be between 0 and 1".into());
+    }
+    if let Some(region) = &value.region {
+        validate_region(region)?;
+    }
+    Ok(value.clone())
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_one() -> f32 {
+    1.0
+}
+
+fn validate_region(region: &TextRegion) -> Result<(), String> {
     if region.width <= 0.0 || region.height <= 0.0 {
         return Err("avatar region width and height must be positive".into());
     }
-    let arc = ArcConfig {
-        curvature: arc.and_then(|value| value.curvature).unwrap_or(manifest.arc.curvature),
-        x_scale: arc.and_then(|value| value.x_scale).unwrap_or(manifest.arc.x_scale),
-    };
+    Ok(())
+}
+
+fn apply_region_override(region: &mut TextRegion, overlay: &RegionOverride) -> Result<(), String> {
+    if let Some(value) = overlay.cx {
+        region.cx = value;
+    }
+    if let Some(value) = overlay.cy {
+        region.cy = value;
+    }
+    if let Some(value) = overlay.width {
+        region.width = value;
+    }
+    if let Some(value) = overlay.height {
+        region.height = value;
+    }
+    if let Some(value) = overlay.rotation {
+        region.rotation = value;
+    }
+    validate_region(region)
+}
+
+fn validate_arc(arc: &ArcConfig) -> Result<(), String> {
+    if !(-1.0..=1.0).contains(&arc.curvature) {
+        return Err("avatar arc curvature must be between -1 and 1".into());
+    }
     if arc.x_scale <= 0.0 {
         return Err("avatar arc x_scale must be positive".into());
     }
-    let font_size = overlay
-        .and_then(|value| value.font_size)
-        .unwrap_or(manifest.font_size);
+    Ok(())
+}
+
+fn apply_arc_override(arc: &mut ArcConfig, overlay: &ArcOverride) -> Result<(), String> {
+    if let Some(value) = overlay.curvature {
+        arc.curvature = value;
+    }
+    if let Some(value) = overlay.x_scale {
+        arc.x_scale = value;
+    }
+    validate_arc(arc)
+}
+
+fn validate_font_size(font_size: f32) -> Result<(), String> {
     if font_size <= 0.0 {
         return Err("avatar font_size must be positive".into());
     }
-    let style = AvatarStyle {
-        fill: parse_color(effects.and_then(|value| value.fill.as_deref()).unwrap_or(&manifest.effects.fill))?,
-        highlight: parse_color(effects.and_then(|value| value.highlight.as_deref()).unwrap_or(&manifest.effects.highlight))?,
-        outline: parse_color(outline.and_then(|value| value.color.as_deref()).unwrap_or(&manifest.effects.outline.color))?,
-        outline_width: outline.and_then(|value| value.width).unwrap_or(manifest.effects.outline.width),
+    Ok(())
+}
+
+fn style_from_config(config: &EffectsConfig) -> Result<AvatarStyle, String> {
+    Ok(AvatarStyle {
+        fill: parse_color(&config.fill)?,
+        highlight: parse_color(&config.highlight)?,
+        outline: parse_color(&config.outline.color)?,
+        outline_width: config.outline.width,
         glow: GlowStyle {
-            color: parse_color(glow.and_then(|value| value.color.as_deref()).unwrap_or(&manifest.effects.glow.color))?,
-            radius: glow.and_then(|value| value.radius).unwrap_or(manifest.effects.glow.radius),
+            color: parse_color(&config.glow.color)?,
+            radius: config.glow.radius,
         },
         inner_shadow: ShadowStyle {
-            color: parse_color(inner_shadow.and_then(|value| value.color.as_deref()).unwrap_or(&manifest.effects.inner_shadow.color))?,
-            offset_x: inner_shadow.and_then(|value| value.offset_x).unwrap_or(manifest.effects.inner_shadow.offset_x),
-            offset_y: inner_shadow.and_then(|value| value.offset_y).unwrap_or(manifest.effects.inner_shadow.offset_y),
-            blur: inner_shadow.and_then(|value| value.blur).unwrap_or(manifest.effects.inner_shadow.blur),
+            color: parse_color(&config.inner_shadow.color)?,
+            offset_x: config.inner_shadow.offset_x,
+            offset_y: config.inner_shadow.offset_y,
+            blur: config.inner_shadow.blur,
         },
-    };
-    let background = overlay
-        .and_then(|value| value.background.as_ref())
-        .unwrap_or(&manifest.background);
-    let font = overlay.and_then(|value| value.font.as_ref()).unwrap_or(&manifest.font);
-    Ok(ResolvedZoneConfig {
-        background: resolve_path(base, background),
-        font: resolve_path(base, font),
-        font_size,
-        region,
-        arc,
-        style,
     })
+}
+
+fn style_from_override(overlay: &EffectsOverride) -> Result<AvatarStyle, String> {
+    let outline = overlay.outline.as_ref().ok_or("text override effects requires outline")?;
+    let glow = overlay.glow.as_ref().ok_or("text override effects requires glow")?;
+    let shadow = overlay.inner_shadow.as_ref().ok_or("text override effects requires inner_shadow")?;
+    Ok(AvatarStyle {
+        fill: parse_color(overlay.fill.as_deref().ok_or("text override effects requires fill")?)?,
+        highlight: parse_color(overlay.highlight.as_deref().ok_or("text override effects requires highlight")?)?,
+        outline: parse_color(outline.color.as_deref().ok_or("text override outline requires color")?)?,
+        outline_width: outline.width.ok_or("text override outline requires width")?,
+        glow: GlowStyle {
+            color: parse_color(glow.color.as_deref().ok_or("text override glow requires color")?)?,
+            radius: glow.radius.ok_or("text override glow requires radius")?,
+        },
+        inner_shadow: ShadowStyle {
+            color: parse_color(shadow.color.as_deref().ok_or("text override inner_shadow requires color")?)?,
+            offset_x: shadow.offset_x.ok_or("text override inner_shadow requires offset_x")?,
+            offset_y: shadow.offset_y.ok_or("text override inner_shadow requires offset_y")?,
+            blur: shadow.blur.ok_or("text override inner_shadow requires blur")?,
+        },
+    })
+}
+
+fn apply_effects_override(style: &mut AvatarStyle, overlay: &EffectsOverride) -> Result<(), String> {
+    if let Some(value) = &overlay.fill {
+        style.fill = parse_color(value)?;
+    }
+    if let Some(value) = &overlay.highlight {
+        style.highlight = parse_color(value)?;
+    }
+    if let Some(value) = &overlay.outline {
+        if let Some(color) = &value.color {
+            style.outline = parse_color(color)?;
+        }
+        if let Some(width) = value.width {
+            style.outline_width = width;
+        }
+    }
+    if let Some(value) = &overlay.glow {
+        if let Some(color) = &value.color {
+            style.glow.color = parse_color(color)?;
+        }
+        if let Some(radius) = value.radius {
+            style.glow.radius = radius;
+        }
+    }
+    if let Some(value) = &overlay.inner_shadow {
+        if let Some(color) = &value.color {
+            style.inner_shadow.color = parse_color(color)?;
+        }
+        if let Some(offset_x) = value.offset_x {
+            style.inner_shadow.offset_x = offset_x;
+        }
+        if let Some(offset_y) = value.offset_y {
+            style.inner_shadow.offset_y = offset_y;
+        }
+        if let Some(blur) = value.blur {
+            style.inner_shadow.blur = blur;
+        }
+    }
+    Ok(())
 }
 
 fn resolve_path(base: &Path, path: &Path) -> PathBuf {

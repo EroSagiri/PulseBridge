@@ -9,8 +9,10 @@ The bridge can also render a JPEG heart-rate avatar in a dedicated renderer
 thread. It reads the fixed asset manifest at
 `/opt/pulsebridge/assets/heart-rate/avatar.json`, prepares a 1280×1280 master,
 and caches rendered BPM values on demand. The manifest describes the background,
-font, text region, rotation, fill, outline, and shadow. Its relative
-`background.png` path is resolved beside the manifest.
+optional foreground, and heart-rate display. Heart-rate display supports text
+or digit sprites and can be rendered as one combined value or as separate
+hundreds/tens/ones positions. Relative asset paths are resolved beside the
+manifest.
 
 For local preview/testing, build and run the separate Rust CLI:
 
@@ -31,39 +33,82 @@ quality that stays at or below the requested limit. BPM values are cycled when
 written as a uniquely numbered `.jpg`. `k`/`m` suffixes use decimal units;
 `ki`/`mi` (or `kib`/`mib`) use binary units.
 
-## Heart-rate zones and per-zone artwork
+## Heart-rate display and per-zone artwork
 
-Zone detection is supplied at runtime; `avatar.json` contains artwork only:
+Zone detection is supplied at runtime; `avatar.json` contains artwork only. A
+minimal text configuration looks like this:
 
 ```json
 {
-  "zones": {
-    "z1": {
-      "effects": { "fill": "#C9F1FF" }
-    },
-    "z4": {
-      "background": "background-z4.png",
-      "region": { "cy": 365, "rotation": -4 },
-      "effects": {
-        "fill": "#FFB4B4",
-        "glow": { "color": "#FF5656AA", "radius": 8 }
-      }
-    },
-    "z5": {
-      "font_size": 118,
-      "effects": {
-        "outline": { "color": "#8A001B", "width": 6 },
-        "glow": { "color": "#FF1744CC", "radius": 14 }
+  "background": "background.png",
+  "foreground": null,
+  "heart_rate": {
+    "layout": "combined",
+    "defaults": {
+      "mode": "text",
+      "common": {
+        "region": { "cx": 420, "cy": 424, "width": 195, "height": 94, "rotation": 0 },
+        "hide_leading_zeroes": true
+      },
+      "text": {
+        "font": "DejaVuSansMono-Bold.ttf",
+        "font_size": 80,
+        "arc": { "curvature": 0, "x_scale": 1 },
+        "effects": {
+          "fill": "#FFFFFF",
+          "highlight": "#FFFFFF88",
+          "outline": { "color": "#702040", "width": 4 },
+          "glow": { "color": "#FF80AA88", "radius": 4 },
+          "inner_shadow": { "color": "#00000055", "offset_x": 2, "offset_y": 3, "blur": 3 }
+        }
       }
     }
   }
 }
 ```
 
-The base `background`, `region`, `arc`, `font`, `font_size`, and every field in
-`effects` remain the defaults. A zone only needs to specify changed fields;
-nested objects are merged recursively. The selected zone's background is also
-loaded independently, and the BPM is drawn on that zone's 1280×1280 master.
+Set `layout` to `individual` to use the three named positions
+`hundreds`, `tens`, and `ones`. Each position inherits `heart_rate.defaults`
+and may override its own region, mode, text style, or sprite style.
+
+Sprite mode requires all ten digits after inheritance. A digit can be an entire
+image or a rectangle from a sprite sheet:
+
+```json
+"sprite": {
+  "spacing": 4,
+  "digits": {
+    "0": { "path": "digits.png", "rect": { "x": 0, "y": 0, "w": 80, "h": 120 } },
+    "1": { "path": "digits/1.png" }
+  }
+}
+```
+
+The example omits digits `2` through `9`; a real sprite configuration must
+provide them. Text effects are only read from `text.effects`; sprite settings
+are only read from `sprite`, so the two modes do not accidentally share
+outline/glow settings.
+
+`foreground` is optional. A Zone can replace it with another image, adjust its
+position, or disable it explicitly with `"foreground": null`:
+
+```json
+"zones": {
+  "z4": {
+    "foreground": { "path": "foreground-z4.png", "opacity": 0.9 },
+    "heart_rate": {
+      "defaults": {
+        "text": { "effects": { "fill": "#FFB4B4" } }
+      }
+    }
+  },
+  "z5": { "foreground": null }
+}
+```
+
+Zone overrides are merged recursively. The selected Zone's background,
+heart-rate display, and foreground are resolved independently, then rendered
+on the 1280×1280 master in the order background, heart rate, foreground.
 
 The CLI accepts the following runtime parameters:
 

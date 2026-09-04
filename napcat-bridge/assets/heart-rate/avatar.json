@@ -1,34 +1,50 @@
 {
   "background": "background.png",
-  "region": {
-    "cx": 420,
-    "cy": 424,
-    "width": 195,
-    "height": 94,
-    "rotation": 0
-  },
-  "arc": {
-    "curvature": 0.12,
-    "x_scale": 0.94
-  },
-  "font": "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-  "font_size": 96,
-  "effects": {
-    "fill": "#F6D989E6",
-    "highlight": "#FFF8D6A0",
-    "outline": {
-      "color": "#1B234A99",
-      "width": 2
+  "heart_rate": {
+    "layout": "combined",
+    "defaults": {
+      "mode": "text",
+      "common": {
+        "region": {
+          "cx": 420,
+          "cy": 424,
+          "width": 195,
+          "height": 94,
+          "rotation": 0
+        },
+        "hide_leading_zeroes": true
+      },
+      "text": {
+        "font": "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "font_size": 96,
+        "arc": {
+          "curvature": 0.12,
+          "x_scale": 0.94
+        },
+        "effects": {
+          "fill": "#F6D989E6",
+          "highlight": "#FFF8D6A0",
+          "outline": {
+            "color": "#1B234A99",
+            "width": 2
+          },
+          "glow": {
+            "color": "#F6D98988",
+            "radius": 8
+          },
+          "inner_shadow": {
+            "color": "#10162BCC",
+            "offset_x": 2,
+            "offset_y": 3,
+            "blur": 2
+          }
+        }
+      }
     },
-    "glow": {
-      "color": "#F6D98988",
-      "radius": 8
-    },
-    "inner_shadow": {
-      "color": "#10162BCC",
-      "offset_x": 2,
-      "offset_y": 3,
-      "blur": 2
+    "positions": {
+      "hundreds": {},
+      "tens": {},
+      "ones": {}
     }
   },
   "zones": {

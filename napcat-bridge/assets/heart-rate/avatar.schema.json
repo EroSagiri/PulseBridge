@@ -4,97 +4,11 @@
   "title": "PulseBridge Heart Rate Avatar Asset",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "background",
-    "region",
-    "arc",
-    "font",
-    "font_size",
-    "effects"
-  ],
+  "required": ["background", "heart_rate"],
   "properties": {
-    "background": {
-      "type": "string",
-      "minLength": 1,
-      "description": "PNG path relative to avatar.json unless absolute."
-    },
-    "region": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["cx", "cy", "width", "height", "rotation"],
-      "properties": {
-        "cx": { "type": "number" },
-        "cy": { "type": "number" },
-        "width": { "type": "number", "exclusiveMinimum": 0 },
-        "height": { "type": "number", "exclusiveMinimum": 0 },
-        "rotation": { "type": "number" }
-      }
-    },
-    "arc": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["curvature", "x_scale"],
-      "properties": {
-        "curvature": {
-          "type": "number",
-          "minimum": -1,
-          "maximum": 1,
-          "description": "Normalized vertical arc strength; positive values arch upward."
-        },
-        "x_scale": {
-          "type": "number",
-          "exclusiveMinimum": 0,
-          "maximum": 2
-        }
-      }
-    },
-    "font": {
-      "type": "string",
-      "minLength": 1,
-      "description": "A real font path available to the service."
-    },
-    "font_size": {
-      "type": "number",
-      "exclusiveMinimum": 0
-    },
-    "effects": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["fill", "highlight", "outline", "glow", "inner_shadow"],
-      "properties": {
-        "fill": { "$ref": "#/$defs/color" },
-        "highlight": { "$ref": "#/$defs/color" },
-        "outline": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["color", "width"],
-          "properties": {
-            "color": { "$ref": "#/$defs/color" },
-            "width": { "type": "integer", "minimum": 0, "maximum": 32 }
-          }
-        },
-        "glow": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["color", "radius"],
-          "properties": {
-            "color": { "$ref": "#/$defs/color" },
-            "radius": { "type": "integer", "minimum": 0, "maximum": 64 }
-          }
-        },
-        "inner_shadow": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["color", "offset_x", "offset_y", "blur"],
-          "properties": {
-            "color": { "$ref": "#/$defs/color" },
-            "offset_x": { "type": "integer", "minimum": -64, "maximum": 64 },
-            "offset_y": { "type": "integer", "minimum": -64, "maximum": 64 },
-            "blur": { "type": "integer", "minimum": 0, "maximum": 64 }
-          }
-        }
-      }
-    },
+    "background": { "type": "string", "minLength": 1 },
+    "foreground": { "anyOf": [{ "$ref": "#/$defs/foreground" }, { "type": "null" }] },
+    "heart_rate": { "$ref": "#/$defs/heart_rate" },
     "zones": {
       "type": "object",
       "additionalProperties": false,
@@ -108,27 +22,237 @@
     }
   },
   "$defs": {
+    "heart_rate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defaults"],
+      "properties": {
+        "layout": { "type": "string", "enum": ["combined", "individual"], "default": "combined" },
+        "defaults": { "$ref": "#/$defs/display_config" },
+        "positions": { "$ref": "#/$defs/positions" }
+      }
+    },
+    "positions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hundreds": { "$ref": "#/$defs/display_override" },
+        "tens": { "$ref": "#/$defs/display_override" },
+        "ones": { "$ref": "#/$defs/display_override" }
+      }
+    },
+    "display_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "common"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["text", "sprite"] },
+        "common": { "$ref": "#/$defs/common" },
+        "text": { "$ref": "#/$defs/text_config" },
+        "sprite": { "$ref": "#/$defs/sprite_config" }
+      }
+    },
+    "common": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["region"],
+      "properties": {
+        "region": { "$ref": "#/$defs/region" },
+        "hide_leading_zeroes": { "type": "boolean", "default": true }
+      }
+    },
+    "text_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["font", "font_size", "arc", "effects"],
+      "properties": {
+        "font": { "type": "string", "minLength": 1 },
+        "font_size": { "type": "number", "exclusiveMinimum": 0 },
+        "arc": { "$ref": "#/$defs/arc" },
+        "effects": { "$ref": "#/$defs/effects" }
+      }
+    },
+    "sprite_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digits"],
+      "properties": {
+        "spacing": { "type": "number", "minimum": 0, "default": 0 },
+        "scale": { "type": "number", "exclusiveMinimum": 0, "default": 1 },
+        "effects": { "$ref": "#/$defs/sprite_effects" },
+        "digits": { "$ref": "#/$defs/digits" }
+      }
+    },
+    "digits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+      "properties": {
+        "0": { "$ref": "#/$defs/digit" }, "1": { "$ref": "#/$defs/digit" },
+        "2": { "$ref": "#/$defs/digit" }, "3": { "$ref": "#/$defs/digit" },
+        "4": { "$ref": "#/$defs/digit" }, "5": { "$ref": "#/$defs/digit" },
+        "6": { "$ref": "#/$defs/digit" }, "7": { "$ref": "#/$defs/digit" },
+        "8": { "$ref": "#/$defs/digit" }, "9": { "$ref": "#/$defs/digit" }
+      }
+    },
+    "digit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "rect": { "$ref": "#/$defs/rect" }
+      }
+    },
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "w", "h"],
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 }, "y": { "type": "integer", "minimum": 0 },
+        "w": { "type": "integer", "minimum": 1 }, "h": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "sprite_effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
+        "tint": { "$ref": "#/$defs/color" }
+      }
+    },
+    "display_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["text", "sprite"] },
+        "common": { "$ref": "#/$defs/common_override" },
+        "text": { "$ref": "#/$defs/text_override" },
+        "sprite": { "$ref": "#/$defs/sprite_override" }
+      }
+    },
+    "common_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "region": { "$ref": "#/$defs/region_override" },
+        "hide_leading_zeroes": { "type": "boolean" }
+      }
+    },
+    "text_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "font": { "type": "string", "minLength": 1 },
+        "font_size": { "type": "number", "exclusiveMinimum": 0 },
+        "arc": { "$ref": "#/$defs/arc_override" },
+        "effects": { "$ref": "#/$defs/effects_override" }
+      }
+    },
+    "sprite_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "spacing": { "type": "number", "minimum": 0 },
+        "scale": { "type": "number", "exclusiveMinimum": 0 },
+        "effects": { "$ref": "#/$defs/sprite_effects_override" },
+        "digits": { "$ref": "#/$defs/digits_override" }
+      }
+    },
+    "digits_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "0": { "$ref": "#/$defs/digit_override" }, "1": { "$ref": "#/$defs/digit_override" },
+        "2": { "$ref": "#/$defs/digit_override" }, "3": { "$ref": "#/$defs/digit_override" },
+        "4": { "$ref": "#/$defs/digit_override" }, "5": { "$ref": "#/$defs/digit_override" },
+        "6": { "$ref": "#/$defs/digit_override" }, "7": { "$ref": "#/$defs/digit_override" },
+        "8": { "$ref": "#/$defs/digit_override" }, "9": { "$ref": "#/$defs/digit_override" }
+      }
+    },
+    "digit_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "rect": { "anyOf": [{ "$ref": "#/$defs/rect" }, { "type": "null" }] }
+      }
+    },
+    "sprite_effects_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "tint": { "anyOf": [{ "$ref": "#/$defs/color" }, { "type": "null" }] }
+      }
+    },
+    "heart_rate_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "layout": { "type": "string", "enum": ["combined", "individual"] },
+        "defaults": { "$ref": "#/$defs/display_override" },
+        "positions": { "$ref": "#/$defs/positions" }
+      }
+    },
+    "foreground": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "rect": { "$ref": "#/$defs/rect" },
+        "region": { "$ref": "#/$defs/region" },
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 }
+      }
+    },
+    "foreground_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "rect": { "anyOf": [{ "$ref": "#/$defs/rect" }, { "type": "null" }] },
+        "region": { "$ref": "#/$defs/region_override" },
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
     "zone_override": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "background": { "type": "string", "minLength": 1 },
-        "region": { "$ref": "#/$defs/region_override" },
-        "arc": { "$ref": "#/$defs/arc_override" },
-        "font": { "type": "string", "minLength": 1 },
-        "font_size": { "type": "number", "exclusiveMinimum": 0 },
-        "effects": { "$ref": "#/$defs/effects_override" }
+        "foreground": { "anyOf": [{ "$ref": "#/$defs/foreground_override" }, { "type": "null" }] },
+        "heart_rate": { "$ref": "#/$defs/heart_rate_override" }
+      }
+    },
+    "region": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cx", "cy", "width", "height", "rotation"],
+      "properties": {
+        "cx": { "type": "number" }, "cy": { "type": "number" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "rotation": { "type": "number" }
       }
     },
     "region_override": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "cx": { "type": "number" },
-        "cy": { "type": "number" },
+        "cx": { "type": "number" }, "cy": { "type": "number" },
         "width": { "type": "number", "exclusiveMinimum": 0 },
         "height": { "type": "number", "exclusiveMinimum": 0 },
         "rotation": { "type": "number" }
+      }
+    },
+    "arc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["curvature", "x_scale"],
+      "properties": {
+        "curvature": { "type": "number", "minimum": -1, "maximum": 1 },
+        "x_scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 }
       }
     },
     "arc_override": {
@@ -139,47 +263,55 @@
         "x_scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 }
       }
     },
+    "effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fill", "highlight", "outline", "glow", "inner_shadow"],
+      "properties": {
+        "fill": { "$ref": "#/$defs/color" }, "highlight": { "$ref": "#/$defs/color" },
+        "outline": { "$ref": "#/$defs/outline" }, "glow": { "$ref": "#/$defs/glow" },
+        "inner_shadow": { "$ref": "#/$defs/shadow" }
+      }
+    },
     "effects_override": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "fill": { "$ref": "#/$defs/color" },
-        "highlight": { "$ref": "#/$defs/color" },
-        "outline": { "$ref": "#/$defs/outline_override" },
-        "glow": { "$ref": "#/$defs/glow_override" },
+        "fill": { "$ref": "#/$defs/color" }, "highlight": { "$ref": "#/$defs/color" },
+        "outline": { "$ref": "#/$defs/outline_override" }, "glow": { "$ref": "#/$defs/glow_override" },
         "inner_shadow": { "$ref": "#/$defs/shadow_override" }
       }
     },
+    "outline": {
+      "type": "object", "additionalProperties": false, "required": ["color", "width"],
+      "properties": { "color": { "$ref": "#/$defs/color" }, "width": { "type": "integer", "minimum": 0, "maximum": 32 } }
+    },
     "outline_override": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "color": { "$ref": "#/$defs/color" },
-        "width": { "type": "integer", "minimum": 0, "maximum": 32 }
-      }
+      "type": "object", "additionalProperties": false,
+      "properties": { "color": { "$ref": "#/$defs/color" }, "width": { "type": "integer", "minimum": 0, "maximum": 32 } }
+    },
+    "glow": {
+      "type": "object", "additionalProperties": false, "required": ["color", "radius"],
+      "properties": { "color": { "$ref": "#/$defs/color" }, "radius": { "type": "integer", "minimum": 0, "maximum": 64 } }
     },
     "glow_override": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
+      "properties": { "color": { "$ref": "#/$defs/color" }, "radius": { "type": "integer", "minimum": 0, "maximum": 64 } }
+    },
+    "shadow": {
+      "type": "object", "additionalProperties": false, "required": ["color", "offset_x", "offset_y", "blur"],
       "properties": {
-        "color": { "$ref": "#/$defs/color" },
-        "radius": { "type": "integer", "minimum": 0, "maximum": 64 }
+        "color": { "$ref": "#/$defs/color" }, "offset_x": { "type": "integer", "minimum": -64, "maximum": 64 },
+        "offset_y": { "type": "integer", "minimum": -64, "maximum": 64 }, "blur": { "type": "integer", "minimum": 0, "maximum": 64 }
       }
     },
     "shadow_override": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "properties": {
-        "color": { "$ref": "#/$defs/color" },
-        "offset_x": { "type": "integer", "minimum": -64, "maximum": 64 },
-        "offset_y": { "type": "integer", "minimum": -64, "maximum": 64 },
-        "blur": { "type": "integer", "minimum": 0, "maximum": 64 }
+        "color": { "$ref": "#/$defs/color" }, "offset_x": { "type": "integer", "minimum": -64, "maximum": 64 },
+        "offset_y": { "type": "integer", "minimum": -64, "maximum": 64 }, "blur": { "type": "integer", "minimum": 0, "maximum": 64 }
       }
     },
-    "color": {
-      "type": "string",
-      "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$",
-      "description": "RGB or RGBA hex color."
-    }
+    "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$" }
   }
 }
