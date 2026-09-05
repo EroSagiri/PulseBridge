@@ -316,7 +316,8 @@ async fn avatar_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver<
     let mut state = *state_rx.borrow_and_update();
     let mut live_device_id = None;
     let mut window = None;
-    let mut last_published_bpm = None;
+    let mut last_displayed_bpm = None;
+    let mut comparison_bpm = None;
     let mut jump_cooldown_until = None;
     let mut last_non_live_state = None;
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
@@ -332,40 +333,60 @@ async fn avatar_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver<
                         if live_device_id != Some(device_id) {
                             live_device_id = Some(device_id);
                             window = None;
-                            last_published_bpm = None;
+                            last_displayed_bpm = None;
+                            comparison_bpm = None;
                             jump_cooldown_until = None;
                         }
-                        window.get_or_insert_with(|| HeartRateWindow::new(now)).push(bpm);
+                        let samples = window.get_or_insert_with(|| HeartRateWindow::new(now));
+                        samples.push(bpm);
+                        debug!(
+                            event = "avatar_sample",
+                            device_id,
+                            bpm,
+                            window_samples = samples.samples.len(),
+                            comparison_bpm = ?comparison_bpm,
+                            "received heart-rate sample for avatar window"
+                        );
                         last_non_live_state = None;
 
                         let jump_allowed = jump_cooldown_until.is_none_or(|until| now >= until);
-                        let jumped = last_published_bpm.is_some_and(|last| bpm.abs_diff(last) > cfg.avatar_jump_threshold_bpm);
+                        let jumped = comparison_bpm.is_some_and(|last| bpm.abs_diff(last) > cfg.avatar_jump_threshold_bpm);
                         if jump_allowed && jumped {
-                            let median = window.take().and_then(|samples| samples.median());
+                            let window_data = window.take();
+                            let (median, sample_count, window_duration_ms) = window_data
+                                .map(|samples| (
+                                    samples.median(),
+                                    samples.samples.len(),
+                                    now.duration_since(samples.started_at).as_millis() as u64,
+                                ))
+                                .unwrap_or((None, 0, 0));
                             jump_cooldown_until = Some(now + cfg.avatar_jump_cooldown);
                             if let Some(median) = median {
-                                if last_published_bpm != Some(median) {
-                                    last_published_bpm = Some(median);
-                                    match upload_avatar(&renderer, &client, &cfg, State::Live { device_id, bpm: median }).await {
-                                        Ok(bytes) => info!(bpm = median, bytes, reason = "jump_median", "updated QQ avatar"),
-                                        Err(error) => warn!(bpm = median, %error, reason = "jump_median", "QQ avatar update failed"),
-                                    }
-                                } else {
-                                    debug!(bpm = median, reason = "jump_median", "skipped QQ avatar update because heart rate is unchanged");
-                                }
+                                maybe_update_live_avatar(
+                                    &renderer,
+                                    &client,
+                                    &cfg,
+                                    State::Live { device_id, bpm: median },
+                                    "jump_median",
+                                    sample_count,
+                                    window_duration_ms,
+                                    &mut last_displayed_bpm,
+                                    &mut comparison_bpm,
+                                ).await;
                             }
                         }
                     }
                     non_live => {
                         live_device_id = None;
                         window = None;
-                        last_published_bpm = None;
+                        last_displayed_bpm = None;
+                        comparison_bpm = None;
                         jump_cooldown_until = None;
                         if last_non_live_state != Some(non_live) {
                             last_non_live_state = Some(non_live);
                             match upload_avatar(&renderer, &client, &cfg, non_live).await {
-                                Ok(bytes) => info!(?non_live, bytes, "updated QQ avatar"),
-                                Err(error) => warn!(?non_live, %error, "QQ avatar update failed"),
+                                Ok(bytes) => info!(event = "avatar_upload", action = "updated", ?non_live, bytes, "updated QQ avatar"),
+                                Err(error) => warn!(event = "avatar_upload", action = "failed", ?non_live, %error, "QQ avatar update failed"),
                             }
                         }
                     }
@@ -377,8 +398,8 @@ async fn avatar_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver<
                     if last_non_live_state != Some(state) {
                         last_non_live_state = Some(state);
                         match upload_avatar(&renderer, &client, &cfg, state).await {
-                            Ok(bytes) => info!(?state, bytes, "updated QQ avatar"),
-                            Err(error) => warn!(?state, %error, "QQ avatar update failed"),
+                            Ok(bytes) => info!(event = "avatar_upload", action = "updated", ?state, bytes, "updated QQ avatar"),
+                            Err(error) => warn!(event = "avatar_upload", action = "failed", ?state, %error, "QQ avatar update failed"),
                         }
                     }
                     continue;
@@ -386,22 +407,109 @@ async fn avatar_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver<
 
                 if let Some(samples) = window.as_ref() {
                     if now.duration_since(samples.started_at) >= avatar_window_interval(&cfg) {
-                        let average = window.take().and_then(|samples| samples.average());
+                        let window_data = window.take();
+                        let (average, sample_count, window_duration_ms) = window_data
+                            .map(|samples| (
+                                samples.average(),
+                                samples.samples.len(),
+                                now.duration_since(samples.started_at).as_millis() as u64,
+                            ))
+                            .unwrap_or((None, 0, 0));
                         if let (Some(average), State::Live { device_id, .. }) = (average, state) {
-                            if last_published_bpm != Some(average) {
-                                last_published_bpm = Some(average);
-                                match upload_avatar(&renderer, &client, &cfg, State::Live { device_id, bpm: average }).await {
-                                    Ok(bytes) => info!(bpm = average, bytes, reason = "window_average", "updated QQ avatar"),
-                                    Err(error) => warn!(bpm = average, %error, reason = "window_average", "QQ avatar update failed"),
-                                }
-                            } else {
-                                debug!(bpm = average, reason = "window_average", "skipped QQ avatar update because heart rate is unchanged");
-                            }
+                            maybe_update_live_avatar(
+                                &renderer,
+                                &client,
+                                &cfg,
+                                State::Live { device_id, bpm: average },
+                                "window_average",
+                                sample_count,
+                                window_duration_ms,
+                                &mut last_displayed_bpm,
+                                &mut comparison_bpm,
+                            ).await;
                         }
                     }
                 }
             }
         }
+    }
+}
+
+async fn maybe_update_live_avatar(
+    renderer: &avatar::AvatarRenderer,
+    client: &Client,
+    cfg: &Config,
+    state: State,
+    reason: &'static str,
+    window_samples: usize,
+    window_duration_ms: u64,
+    last_displayed_bpm: &mut Option<u8>,
+    comparison_bpm: &mut Option<u8>,
+) {
+    let State::Live { bpm: candidate_bpm, .. } = state else { return; };
+    let displayed_before = *last_displayed_bpm;
+    let comparison_before = *comparison_bpm;
+    let display_difference = displayed_before.map(|displayed| candidate_bpm.abs_diff(displayed));
+
+    // This is deliberately separate from last_displayed_bpm. A skipped value
+    // is still the newest heart-rate reference for jump detection, even though
+    // the QQ avatar still shows the older value.
+    *comparison_bpm = Some(candidate_bpm);
+
+    if display_difference.is_some_and(|difference| difference <= 1) {
+        info!(
+            event = "avatar_decision",
+            action = "skip",
+            reason,
+            candidate_bpm,
+            displayed_bpm = ?displayed_before,
+            comparison_bpm_before = ?comparison_before,
+            comparison_bpm_after = ?comparison_bpm,
+            display_difference = ?display_difference,
+            window_samples,
+            window_duration_ms,
+            "skipped QQ avatar update because candidate is within display tolerance"
+        );
+        return;
+    }
+
+    info!(
+        event = "avatar_decision",
+        action = "update",
+        reason,
+        candidate_bpm,
+        displayed_bpm = ?displayed_before,
+        comparison_bpm_before = ?comparison_before,
+        comparison_bpm_after = ?comparison_bpm,
+        display_difference = ?display_difference,
+        window_samples,
+        window_duration_ms,
+        "starting QQ avatar update"
+    );
+    match upload_avatar(renderer, client, cfg, state).await {
+        Ok(bytes) => {
+            *last_displayed_bpm = Some(candidate_bpm);
+            info!(
+                event = "avatar_upload",
+                action = "updated",
+                reason,
+                bpm = candidate_bpm,
+                bytes,
+                window_samples,
+                window_duration_ms,
+                "updated QQ avatar"
+            );
+        }
+        Err(error) => warn!(
+            event = "avatar_upload",
+            action = "failed",
+            reason,
+            bpm = candidate_bpm,
+            %error,
+            window_samples,
+            window_duration_ms,
+            "QQ avatar update failed"
+        ),
     }
 }
 

@@ -152,6 +152,14 @@ window. That window is consumed and restarted, and the immediate-jump path
 then enters a 5-second cooldown. The normal day/night window is still allowed
 to complete during that cooldown.
 
+The bridge keeps the actual BPM shown by QQ separate from its latest BPM
+comparison reference. If a candidate is within ±1 BPM of the displayed avatar,
+the upload is skipped, but the candidate is recorded as the new comparison
+reference for later jump detection. Avatar logs use `event=avatar_decision` for
+update/skip decisions and `event=avatar_upload` for successful or failed
+requests; they include the candidate, displayed/reference BPM, reason, window
+sample count, and window duration.
+
 The custom online status still updates on each changed state subject to its
 own interval. PulseBridge itself only emits a metric event when the heart-rate
 value changes. The heart icon alternates on each update to simulate a beat.
