@@ -89,6 +89,41 @@ provide them. Text effects are only read from `text.effects`; sprite settings
 are only read from `sprite`, so the two modes do not accidentally share
 outline/glow settings.
 
+### Dynamic text objects and templates
+
+In addition to the legacy `defaults` display, `heart_rate.texts` can contain
+multiple independent text or sprite objects. Each object has an `id`, a
+`template`, and a normal `display` configuration, so its position and visual
+style are configured independently:
+
+```json
+"heart_rate": {
+  "defaults": { "mode": "text", "common": { "region": { "cx": 640, "cy": 640, "width": 300, "height": 120, "rotation": 0 } }, "text": { "font": "font.ttf", "font_size": 80, "arc": { "curvature": 0, "x_scale": 1 }, "effects": { "fill": "#FFFFFF", "highlight": "#FFFFFF88", "outline": { "color": "#000000", "width": 2 }, "glow": { "color": "#FFFFFF44", "radius": 2 }, "inner_shadow": { "color": "#00000044", "offset_x": 1, "offset_y": 1, "blur": 1 } } } },
+  "variables": {
+    "fun": {
+      "rules": [
+        { "when": { "bpm": 11 }, "value": "不对吧" },
+        { "when": { "bpm": 233 }, "value": "人类无极限" },
+        { "when": { "bpm_min": 160, "bpm_max": 190 }, "value": "心跳加速" }
+      ],
+      "default": "正常运行"
+    }
+  },
+  "texts": [
+    { "id": "bpm", "template": "{bpm}", "display": { "mode": "text", "common": { "region": { "cx": 640, "cy": 640, "width": 300, "height": 120, "rotation": 0 } }, "text": { "font": "font.ttf", "font_size": 80, "arc": { "curvature": 0, "x_scale": 1 }, "effects": { "fill": "#FFFFFF", "highlight": "#FFFFFF88", "outline": { "color": "#000000", "width": 2 }, "glow": { "color": "#FFFFFF44", "radius": 2 }, "inner_shadow": { "color": "#00000044", "offset_x": 1, "offset_y": 1, "blur": 1 } } } } },
+    { "id": "fun", "template": "{fun}", "display": { "mode": "text", "common": { "region": { "cx": 640, "cy": 760, "width": 500, "height": 80, "rotation": 0 } }, "text": { "font": "font.ttf", "font_size": 48, "arc": { "curvature": 0, "x_scale": 1 }, "effects": { "fill": "#FFFFFF", "highlight": "#FFFFFF88", "outline": { "color": "#000000", "width": 2 }, "glow": { "color": "#FFFFFF44", "radius": 2 }, "inner_shadow": { "color": "#00000044", "offset_x": 1, "offset_y": 1, "blur": 1 } } } } }
+  ]
+}
+```
+
+Built-in placeholders include `{bpm}`, `{bpm_hundreds}`, `{bpm_tens}`,
+`{bpm_ones}`, `{zone}`, and `{status}`. User variables use deterministic
+first-match rules and a `default`; no random values or time-based values are
+generated, so repeated rendering of the same state produces the same image.
+Zone overrides can replace `texts` and `variables` under their existing
+`heart_rate` override. Full conditional overrides for background and
+foreground are planned for the next migration step.
+
 `foreground` is optional. A Zone can replace it with another image, adjust its
 position, or disable it explicitly with `"foreground": null`:
 

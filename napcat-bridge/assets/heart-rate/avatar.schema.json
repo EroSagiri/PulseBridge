@@ -29,7 +29,55 @@
       "properties": {
         "layout": { "type": "string", "enum": ["combined", "individual"], "default": "combined" },
         "defaults": { "$ref": "#/$defs/display_config" },
-        "positions": { "$ref": "#/$defs/positions" }
+        "positions": { "$ref": "#/$defs/positions" },
+        "texts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/text_object" }
+        },
+        "variables": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/variable" }
+        }
+      }
+    },
+    "text_object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "template", "display"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "template": { "type": "string" },
+        "display": { "$ref": "#/$defs/display_config" }
+      }
+    },
+    "variable": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/variable_rule" }
+        },
+        "default": { "type": "string" }
+      }
+    },
+    "variable_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when", "value"],
+      "properties": {
+        "when": { "$ref": "#/$defs/variable_condition" },
+        "value": { "type": "string" }
+      }
+    },
+    "variable_condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bpm": { "type": "integer", "minimum": 0, "maximum": 999 },
+        "bpm_min": { "type": "integer", "minimum": 0, "maximum": 999 },
+        "bpm_max": { "type": "integer", "minimum": 0, "maximum": 999 },
+        "zone": { "type": "string", "enum": ["z1", "z2", "z3", "z4", "z5"] }
       }
     },
     "positions": {
@@ -192,7 +240,15 @@
       "properties": {
         "layout": { "type": "string", "enum": ["combined", "individual"] },
         "defaults": { "$ref": "#/$defs/display_override" },
-        "positions": { "$ref": "#/$defs/positions" }
+        "positions": { "$ref": "#/$defs/positions" },
+        "texts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/text_object" }
+        },
+        "variables": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/variable" }
+        }
       }
     },
     "foreground": {

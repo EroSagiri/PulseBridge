@@ -66,6 +66,44 @@ struct HeartRateConfig {
     defaults: DisplayConfig,
     #[serde(default)]
     positions: PositionOverrides,
+    /// New unified dynamic text objects. The legacy fields above remain
+    /// accepted so existing manifests can be migrated incrementally.
+    #[serde(default)]
+    texts: Vec<TextObjectConfig>,
+    #[serde(default)]
+    variables: HashMap<String, VariableConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextObjectConfig {
+    id: String,
+    template: String,
+    display: DisplayConfig,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct VariableConfig {
+    #[serde(default)]
+    rules: Vec<VariableRule>,
+    default: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VariableRule {
+    when: VariableCondition,
+    value: String,
+}
+
+#[derive(Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct VariableCondition {
+    bpm: Option<u16>,
+    bpm_min: Option<u16>,
+    bpm_max: Option<u16>,
+    zone: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Default)]
@@ -245,6 +283,10 @@ struct HeartRateOverride {
     layout: Option<HeartRateLayout>,
     defaults: Option<DisplayOverride>,
     positions: Option<PositionOverrides>,
+    #[serde(default)]
+    texts: Option<Vec<TextObjectConfig>>,
+    #[serde(default)]
+    variables: Option<HashMap<String, VariableConfig>>,
 }
 
 #[derive(Clone, Deserialize, Default)]
@@ -529,6 +571,21 @@ struct ResolvedHeartRate {
     layout: HeartRateLayout,
     defaults: ResolvedDisplay,
     positions: [ResolvedDisplay; 3],
+    texts: Vec<ResolvedTextObject>,
+    variables: HashMap<String, VariableConfig>,
+}
+
+#[derive(Clone)]
+struct ResolvedTextObject {
+    id: String,
+    template: String,
+    display: ResolvedDisplay,
+}
+
+struct TextObjectRenderer {
+    id: String,
+    template: String,
+    display: DisplayRenderer,
 }
 
 #[derive(Clone)]
@@ -698,6 +755,8 @@ struct HeartRateRenderer {
     layout: HeartRateLayout,
     defaults: DisplayRenderer,
     positions: [DisplayRenderer; 3],
+    texts: Vec<TextObjectRenderer>,
+    variables: HashMap<String, VariableConfig>,
 }
 
 struct DisplayRenderer {
@@ -726,6 +785,64 @@ struct ForegroundLayer {
     image: RgbaImage,
     region: TextRegion,
     opacity: f32,
+}
+
+struct TemplateContext<'a> {
+    bpm: Option<u16>,
+    zone: ZoneId,
+    variables: &'a HashMap<String, VariableConfig>,
+}
+
+impl<'a> TemplateContext<'a> {
+    fn new(bpm: Option<u16>, zone: ZoneId, variables: &'a HashMap<String, VariableConfig>) -> Self {
+        Self { bpm, zone, variables }
+    }
+
+    fn value(&self, name: &str) -> Result<String, String> {
+        match name {
+            "bpm" => Ok(self.bpm.map(|value| value.to_string()).unwrap_or_default()),
+            "bpm_hundreds" => Ok(self.bpm.and_then(|value| (value >= 100).then_some(value / 100)).map(|value| value.to_string()).unwrap_or_default()),
+            "bpm_tens" => Ok(self.bpm.and_then(|value| (value >= 10).then_some((value / 10) % 10)).map(|value| value.to_string()).unwrap_or_default()),
+            "bpm_ones" => Ok(self.bpm.map(|value| (value % 10).to_string()).unwrap_or_default()),
+            "zone" => Ok(self.zone.as_str().to_ascii_lowercase()),
+            "status" => Ok(if self.bpm.is_some() { "online" } else { "offline" }.into()),
+            variable => self.variable(variable),
+        }
+    }
+
+    fn variable(&self, name: &str) -> Result<String, String> {
+        let config = self.variables.get(name).ok_or_else(|| format!("unknown avatar template variable {{{name}}}"))?;
+        let bpm = self.bpm;
+        let zone = self.zone.as_str().to_ascii_lowercase();
+        for rule in &config.rules {
+            let matches = rule.when.bpm.is_none_or(|expected| bpm == Some(expected))
+                && rule.when.bpm_min.is_none_or(|minimum| bpm.is_some_and(|value| value >= minimum))
+                && rule.when.bpm_max.is_none_or(|maximum| bpm.is_some_and(|value| value <= maximum))
+                && rule.when.zone.as_ref().is_none_or(|expected| expected.eq_ignore_ascii_case(&zone));
+            if matches {
+                return Ok(rule.value.clone());
+            }
+        }
+        config.default.clone().ok_or_else(|| format!("avatar variable {name} has no matching rule or default"))
+    }
+}
+
+fn expand_template(template: &str, context: &TemplateContext<'_>) -> Result<String, String> {
+    let mut output = String::with_capacity(template.len());
+    let mut remaining = template;
+    while let Some(start) = remaining.find('{') {
+        output.push_str(&remaining[..start]);
+        let after_start = &remaining[start + 1..];
+        let end = after_start.find('}').ok_or_else(|| format!("unterminated avatar template in {template:?}"))?;
+        let name = &after_start[..end];
+        if name.is_empty() || name.contains('{') {
+            return Err(format!("invalid avatar template variable {{{name}}}"));
+        }
+        output.push_str(&context.value(name)?);
+        remaining = &after_start[end + 1..];
+    }
+    output.push_str(remaining);
+    Ok(output)
 }
 
 impl ZoneRenderer {
@@ -764,20 +881,34 @@ impl HeartRateRenderer {
             .collect::<Result<Vec<_>, _>>()?
             .try_into()
             .map_err(|_| "avatar renderer expected three heart-rate positions".to_string())?;
+        let texts = config
+            .texts
+            .into_iter()
+            .map(|text| {
+                Ok(TextObjectRenderer {
+                    id: text.id,
+                    template: text.template,
+                    display: DisplayRenderer::new(text.display, coordinate_scale)?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
             layout: config.layout,
             defaults,
             positions,
+            texts,
+            variables: config.variables,
         })
     }
 
-    fn render(&self, image: &mut RgbaImage, label: &str) -> Result<(), String> {
+    fn render(&self, image: &mut RgbaImage, label: &str, bpm: Option<u16>, zone: ZoneId) -> Result<(), String> {
         match self.layout {
             HeartRateLayout::Combined => self.render_display(image, &self.defaults, label),
             HeartRateLayout::Individual => {
                 let digits: Vec<char> = label.chars().filter(|character| character.is_ascii_digit()).collect();
                 if digits.is_empty() {
-                    return self.render_display(image, &self.defaults, label);
+                    self.render_display(image, &self.defaults, label)?;
+                    return self.render_text_objects(image, bpm, zone);
                 }
                 let digits = if self.defaults.common.hide_leading_zeroes {
                     digits
@@ -795,7 +926,18 @@ impl HeartRateRenderer {
                 }
                 Ok(())
             }
+        }?;
+        self.render_text_objects(image, bpm, zone)
+    }
+
+    fn render_text_objects(&self, image: &mut RgbaImage, bpm: Option<u16>, zone: ZoneId) -> Result<(), String> {
+        let context = TemplateContext::new(bpm, zone, &self.variables);
+        for text in &self.texts {
+            let value = expand_template(&text.template, &context)
+                .map_err(|error| format!("text object {}: {error}", text.id))?;
+            self.render_display(image, &text.display, &value)?;
         }
+        Ok(())
     }
 
     fn render_display(&self, image: &mut RgbaImage, display: &DisplayRenderer, label: &str) -> Result<(), String> {
@@ -985,7 +1127,7 @@ impl Renderer {
     }
 
     fn render_fresh(&self, bpm: u16) -> Result<Vec<u8>, String> {
-        self.render_label(self.zone_scheme.zone_for(bpm), &display_bpm(bpm))
+        self.render_label(self.zone_scheme.zone_for(bpm), Some(bpm), &display_bpm(bpm))
             .map(|bytes| (*bytes).clone())
     }
 
@@ -993,7 +1135,7 @@ impl Renderer {
         if let Some(cached) = &self.no_data {
             return Ok(cached.clone());
         }
-        let bytes = self.render_label(ZoneId::OutOfRange, "--")?;
+        let bytes = self.render_label(ZoneId::OutOfRange, None, "--")?;
         self.no_data = Some(bytes.clone());
         Ok(bytes)
     }
@@ -1002,18 +1144,18 @@ impl Renderer {
         if let Some(cached) = &self.offline {
             return Ok(cached.clone());
         }
-        let bytes = self.render_label(ZoneId::OutOfRange, "OFF")?;
+        let bytes = self.render_label(ZoneId::OutOfRange, None, "OFF")?;
         self.offline = Some(bytes.clone());
         Ok(bytes)
     }
 
-    fn render_label(&self, zone: ZoneId, text: &str) -> Result<Arc<Vec<u8>>, String> {
+    fn render_label(&self, zone: ZoneId, bpm: Option<u16>, text: &str) -> Result<Arc<Vec<u8>>, String> {
         let zone_renderer = zone
             .index()
             .map(|index| &self.zones[index])
             .unwrap_or(&self.base);
         let mut image = zone_renderer.background.clone();
-        zone_renderer.heart_rate.render(&mut image, text)?;
+        zone_renderer.heart_rate.render(&mut image, text, bpm, zone)?;
         if let Some(foreground) = &zone_renderer.foreground {
             foreground.overlay(&mut image);
         }
@@ -1603,7 +1745,24 @@ fn resolve_heart_rate(
         resolve_position(base, &config.defaults, &config.positions.tens, overlay, zone_positions.map(|value| &value.tens))?,
         resolve_position(base, &config.defaults, &config.positions.ones, overlay, zone_positions.map(|value| &value.ones))?,
     ];
-    Ok(ResolvedHeartRate { layout, defaults, positions })
+    let text_configs = overlay
+        .and_then(|value| value.texts.as_ref())
+        .unwrap_or(&config.texts);
+    let texts = text_configs
+        .iter()
+        .map(|text| {
+            Ok(ResolvedTextObject {
+                id: text.id.clone(),
+                template: text.template.clone(),
+                display: resolve_display(base, &text.display, None)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut variables = config.variables.clone();
+    if let Some(overlay_variables) = overlay.and_then(|value| value.variables.as_ref()) {
+        variables.extend(overlay_variables.clone());
+    }
+    Ok(ResolvedHeartRate { layout, defaults, positions, texts, variables })
 }
 
 fn resolve_position(
@@ -2053,7 +2212,7 @@ fn resolve_path(base: &Path, path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{display_bpm, parse_custom_zones, ZoneAlgorithm, ZoneId, ZoneRange, ZoneScheme};
+    use super::{display_bpm, expand_template, parse_custom_zones, HashMap, TemplateContext, VariableConfig, VariableRule, VariableCondition, ZoneAlgorithm, ZoneId, ZoneRange, ZoneScheme};
 
     #[test]
     fn hides_only_leading_zeroes() {
@@ -2119,5 +2278,28 @@ mod tests {
         assert_eq!(ranges[0], ZoneRange { min: 50, max: 100 });
         assert_eq!(ranges[4], ZoneRange { min: 181, max: 200 });
         assert!(parse_custom_zones("50-100,101-140").is_err());
+    }
+
+    #[test]
+    fn expands_bpm_and_digit_templates_deterministically() {
+        let variables = HashMap::new();
+        let context = TemplateContext::new(Some(58), ZoneId::Z1, &variables);
+        assert_eq!(expand_template("{bpm}|{bpm_hundreds}|{bpm_tens}|{bpm_ones}|{zone}", &context).unwrap(), "58||5|8|z1");
+    }
+
+    #[test]
+    fn resolves_exact_variable_rules_before_default() {
+        let mut variables = HashMap::new();
+        variables.insert("fun".into(), VariableConfig {
+            rules: vec![VariableRule {
+                when: VariableCondition { bpm: Some(11), ..Default::default() },
+                value: "不对吧".into(),
+            }],
+            default: Some("正常".into()),
+        });
+        let eleven = TemplateContext::new(Some(11), ZoneId::Z1, &variables);
+        let twelve = TemplateContext::new(Some(12), ZoneId::Z1, &variables);
+        assert_eq!(expand_template("{fun}", &eleven).unwrap(), "不对吧");
+        assert_eq!(expand_template("{fun}", &twelve).unwrap(), "正常");
     }
 }
