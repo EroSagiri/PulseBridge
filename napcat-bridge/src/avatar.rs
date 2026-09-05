@@ -134,6 +134,25 @@ struct CommonConfig {
     region: TextRegion,
     #[serde(default = "default_true")]
     hide_leading_zeroes: bool,
+    #[serde(default)]
+    surface: Option<SurfaceConfig>,
+}
+
+/// Optional matte pigment interaction with the background, in master coordinates.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SurfaceConfig {
+    grain: f32,
+    lighting: f32,
+}
+
+impl SurfaceConfig {
+    fn validate(self) -> Result<Self, String> {
+        if !(0.0..=1.0).contains(&self.grain) || !(0.0..=1.0).contains(&self.lighting) {
+            return Err("surface grain and lighting must be between 0 and 1".into());
+        }
+        Ok(self)
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -249,6 +268,7 @@ struct EffectsOverride {
 struct CommonOverride {
     region: Option<RegionOverride>,
     hide_leading_zeroes: Option<bool>,
+    surface: Option<SurfaceConfig>,
 }
 
 #[derive(Clone, Deserialize, Default)]
@@ -618,6 +638,7 @@ struct ResolvedDisplay {
 struct ResolvedCommon {
     region: TextRegion,
     hide_leading_zeroes: bool,
+    surface: Option<SurfaceConfig>,
 }
 
 #[derive(Clone)]
@@ -969,7 +990,7 @@ impl HeartRateRenderer {
     }
 
     fn render_display(&self, image: &mut RgbaImage, display: &DisplayRenderer, label: &str) -> Result<(), String> {
-        let rendered = match display.mode {
+        let mut rendered = match display.mode {
             DisplayMode::Text => display
                 .text
                 .as_ref()
@@ -992,7 +1013,12 @@ impl HeartRateRenderer {
                 }
             }
         }?;
-        imageops::overlay(image, &rendered, display.common.region.cx.round() as i64 - i64::from(rendered.width()) / 2, display.common.region.cy.round() as i64 - i64::from(rendered.height()) / 2);
+        let left = display.common.region.cx.round() as i64 - i64::from(rendered.width()) / 2;
+        let top = display.common.region.cy.round() as i64 - i64::from(rendered.height()) / 2;
+        if let Some(surface) = display.common.surface {
+            apply_surface(&mut rendered, image, left, top, surface);
+        }
+        imageops::overlay(image, &rendered, left, top);
         Ok(())
     }
 }
@@ -1013,6 +1039,34 @@ fn empty_display_layer(display: &DisplayRenderer) -> RgbaImage {
     }
 }
 
+fn apply_surface(layer: &mut RgbaImage, background: &RgbaImage, left: i64, top: i64, surface: SurfaceConfig) {
+    if surface.grain == 0.0 && surface.lighting == 0.0 {
+        return;
+    }
+    for (x, y, pixel) in layer.enumerate_pixels_mut() {
+        if pixel.0[3] == 0 {
+            continue;
+        }
+        let bx = left + i64::from(x);
+        let by = top + i64::from(y);
+        if bx < 0 || by < 0 || bx >= i64::from(background.width()) || by >= i64::from(background.height()) {
+            continue;
+        }
+        let base = background.get_pixel(bx as u32, by as u32).0;
+        let luma = (0.2126 * f32::from(base[0]) + 0.7152 * f32::from(base[1]) + 0.0722 * f32::from(base[2])) / 255.0;
+        // Stable wall-space grain: changing digits never makes the surface flicker.
+        let mut hash = (bx as u32).wrapping_mul(374761393) ^ (by as u32).wrapping_mul(668265263);
+        hash = (hash ^ (hash >> 13)).wrapping_mul(1274126177);
+        let noise = ((hash ^ (hash >> 16)) & 255) as f32 / 255.0;
+        let coverage = 1.0 - surface.grain * (0.25 + 0.75 * noise);
+        pixel.0[3] = (f32::from(pixel.0[3]) * coverage).round() as u8;
+        for (channel, wall) in pixel.0[..3].iter_mut().zip(base[..3].iter()) {
+            let illumination = 1.0 - surface.lighting * (0.65 * (1.0 - luma) + 0.35 * (1.0 - f32::from(*wall) / 255.0));
+            *channel = (f32::from(*channel) * illumination).round() as u8;
+        }
+    }
+}
+
 impl DisplayRenderer {
     fn new(config: ResolvedDisplay, coordinate_scale: f32) -> Result<Self, String> {
         let text = config.text.map(|text| TextRenderer::new(text, coordinate_scale)).transpose()?;
@@ -1027,6 +1081,7 @@ impl DisplayRenderer {
             common: ResolvedCommon {
                 region: config.common.region.scaled(coordinate_scale),
                 hide_leading_zeroes: config.common.hide_leading_zeroes,
+                surface: config.common.surface,
             },
             text,
             sprite,
@@ -1922,6 +1977,7 @@ fn resolve_common(config: &CommonConfig) -> Result<ResolvedCommon, String> {
     Ok(ResolvedCommon {
         region: config.region.clone(),
         hide_leading_zeroes: config.hide_leading_zeroes,
+        surface: config.surface.map(SurfaceConfig::validate).transpose()?,
     })
 }
 
@@ -1931,6 +1987,9 @@ fn apply_common_override(common: &mut ResolvedCommon, overlay: &CommonOverride) 
     }
     if let Some(value) = overlay.hide_leading_zeroes {
         common.hide_leading_zeroes = value;
+    }
+    if let Some(surface) = overlay.surface {
+        common.surface = Some(surface.validate()?);
     }
     Ok(())
 }
@@ -2329,6 +2388,49 @@ fn resolve_path(base: &Path, path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{display_bpm, expand_template, parse_custom_zones, HashMap, TemplateContext, VariableConfig, VariableRule, VariableCondition, ZoneAlgorithm, ZoneId, ZoneRange, ZoneScheme};
+
+    #[test]
+    fn surface_follows_wall_lighting_and_preserves_transparent_pixels() {
+        use super::{apply_surface, Rgba, RgbaImage, SurfaceConfig};
+        let mut wall = RgbaImage::from_pixel(2, 1, Rgba([240, 200, 160, 255]));
+        wall.put_pixel(1, 0, Rgba([25, 20, 15, 255]));
+        let source = RgbaImage::from_pixel(2, 1, Rgba([230, 230, 230, 200]));
+        let mut painted = source.clone();
+        apply_surface(&mut painted, &wall, 0, 0, SurfaceConfig { grain: 0.0, lighting: 0.5 });
+        assert!(painted.get_pixel(0, 0).0[0] > painted.get_pixel(1, 0).0[0]);
+        assert!(painted.get_pixel(0, 0).0[0] > painted.get_pixel(0, 0).0[2]);
+        assert_eq!(painted.get_pixel(0, 0).0[3], 200);
+        let mut disabled = source.clone();
+        apply_surface(&mut disabled, &wall, 0, 0, SurfaceConfig { grain: 0.0, lighting: 0.0 });
+        assert_eq!(disabled, source);
+        let mut transparent = RgbaImage::new(2, 1);
+        apply_surface(&mut transparent, &wall, 0, 0, SurfaceConfig { grain: 1.0, lighting: 1.0 });
+        assert_eq!(transparent, RgbaImage::new(2, 1));
+    }
+
+    #[test]
+    fn surface_grain_is_anchored_to_wall_coordinates_and_validated() {
+        use super::{apply_surface, Rgba, RgbaImage, SurfaceConfig};
+        let wall = RgbaImage::from_pixel(8, 8, Rgba([100, 110, 120, 255]));
+        let surface = SurfaceConfig { grain: 0.5, lighting: 0.2 };
+        let mut large = RgbaImage::from_pixel(4, 4, Rgba([240, 240, 240, 255]));
+        let mut small = RgbaImage::from_pixel(1, 1, Rgba([240, 240, 240, 255]));
+        apply_surface(&mut large, &wall, 1, 1, surface);
+        apply_surface(&mut small, &wall, 3, 3, surface);
+        assert_eq!(large.get_pixel(2, 2), small.get_pixel(0, 0));
+        // Regions may extend beyond the canvas; clipped pixels must not panic.
+        apply_surface(&mut large, &wall, -2, -2, surface);
+        assert!(SurfaceConfig { grain: f32::NAN, lighting: 0.0 }.validate().is_err());
+        assert!(SurfaceConfig { grain: 0.0, lighting: 1.1 }.validate().is_err());
+    }
+
+    #[test]
+    fn legacy_common_config_does_not_enable_surface() {
+        let config: super::CommonConfig = serde_json::from_str(
+            r#"{"region":{"cx":10,"cy":10,"width":20,"height":20,"rotation":0}}"#,
+        ).unwrap();
+        assert!(super::resolve_common(&config).unwrap().surface.is_none());
+    }
 
     #[test]
     fn hides_only_leading_zeroes() {

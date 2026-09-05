@@ -115,6 +115,22 @@ metadata:
 
 所有颜色必须是 `#RRGGBB` 或 `#RRGGBBAA`。schema 的范围也必须遵守：outline width `0..32`、glow radius `0..64`、shadow offset `-64..64`、blur `0..64`。
 
+### 动态叠加层与底图的一致性
+
+动态内容与底图的局部光照、纹理尺度或遮挡关系不一致时，会显得脱离场景。先判断差异来自几何位置、颜色与明暗、透明度分布还是图层顺序，再调整对应参数；不要把某套字体和效果当作通用解法。
+
+需要让叠加层响应下方图像时，可在显示对象的 `common` 中配置：
+
+```json
+"surface": { "grain": 0.2, "lighting": 0.22 }
+```
+
+- 两个字段都必须提供，取值均为 `0..1`。`grain` 用固定在 master 坐标上的噪声调制叠加层透明度，动态内容变化时纹理位置保持稳定；`lighting` 根据下方已合成图像的亮度和颜色调制叠加层 RGB。
+- 省略时保留原有渲染；分区可通过 `common.surface` 覆写。要关闭继承的效果，显式把两个值都设为 `0`，不要依赖 `null` 清除继承。
+- 该处理会作用于整个显示层，包括已有文字或贴图效果。根据目标外观协调 fill、glow、highlight、描边和阴影，并检查处理后的局部对比度与缩略图可读性；示例强度不是默认风格。
+- 此配置只处理颜色和透明度，不提供自动透视或主体分割。几何贴合仍由 region、rotation、arc 控制；遮挡由 background → 心率及文字层 → foreground 的顺序和 foreground 透明通道控制。
+- 使用包含此字段实现的 Rust 版本重新构建预览和服务。旧版本使用严格字段解析，不能直接加载新增字段。
+
 ## 5. 写 `avatar.json`
 
 当前 manifest 的顶层结构不是旧版的平铺 `region/font/effects`，而是以下结构。不要添加 schema 未声明的字段或注释：
@@ -210,7 +226,7 @@ cargo run --bin pulsebridge-avatar -- \
   --bpm 7,70,138,188,200 \
   --count 5 \
   --size 320 \
-  --quality 50 \
+  --max-bytes 20k \
   --output /tmp/pulsebridge-avatar-preview
 ```
 
@@ -220,20 +236,22 @@ cargo run --bin pulsebridge-avatar -- \
 cargo run --bin pulsebridge-avatar -- \
   assets/heart-rate/avatar.json \
   --bpm 66,140,180 \
+  --count 3 \
   --zone-algorithm max_hr --max-hr 200 \
-  --size 320 --quality 50 \
+  --size 320 --max-bytes 20k \
   --output /tmp/pulsebridge-avatar-zones
 
 cargo run --bin pulsebridge-avatar -- \
   assets/heart-rate/avatar.json \
   --bpm 66,170,190 \
+  --count 3 \
   --zone-algorithm lactate_threshold --max-hr 200 \
   --lactate-threshold 170 \
-  --size 320 --quality 50 \
+  --size 320 --max-bytes 20k \
   --output /tmp/pulsebridge-avatar-lthr
 ```
 
-`--quality` 与 `--max-bytes` 互斥；未提供时默认质量为 50。需要验证 NapCat 限制时可使用 `--max-bytes 10k`，其中 `k/m` 是十进制，`ki/mi` 是二进制。BPM 列表会循环使用，输出文件名包含 BPM 和序号。
+`--quality` 与 `--max-bytes` 互斥；未提供时默认质量为 50。这里的预览示例使用 `--max-bytes 20k`（20000 字节）；按用户指定上限调整，不把示例值当作 NapCat 的固定限制。其中 `k/m` 是十进制，`ki/mi` 是二进制。BPM 列表会循环使用，应显式指定 `--count`，输出文件名包含 BPM 和序号。
 
 逐张用图像查看工具检查原图和预览，至少确认：
 
@@ -257,6 +275,8 @@ file assets/heart-rate/background.png
 ```
 
 `tools/render_heart_rate.py` 只是在画布中央粗略叠字的旧式辅助脚本，不读取 manifest，不代表服务渲染结果；不要用它作为最终校验。`tools/make_test_avatar.py` 和 `assets/heart-rate/heart-rate-*.jpg/png` 是测试/预览资产，不要把它们误当成 manifest 的源底图。
+
+动态内容的语义正确性与渲染正确性应分别验证。辅助脚本可构建 manifest、检查映射覆盖和计算结果，最终图像仍交给现有 Rust CLI 渲染。检查实际显示字符串、换行后的含义、后备字形、最大行宽和总高度；渲染成功不代表内容正确或未被裁切。规则中的固定阈值不会自动跟随运行时分区参数改变，验证时必须区分两者。
 
 ## 7. 失败处理与交付
 

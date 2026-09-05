@@ -35,6 +35,15 @@ written as a uniquely numbered `.jpg`. `k`/`m` suffixes use decimal units;
 
 ## Heart-rate display and per-zone artwork
 
+For matte writing on a wall or other surface, a display's `common` object can
+optionally include `"surface": { "grain": 0.2, "lighting": 0.22 }`. Both values
+are in `0..1`: grain reduces pigment coverage using deterministic master-space
+texture, and lighting modulates pigment color using the underlying image.
+Omitting `surface` preserves the existing rendering. Set both values to zero
+to disable an inherited effect. Disable glow/highlight for chalk or matte ink.
+This does not segment people: keep text in a clear background area, or use the
+existing foreground layer if a person must occlude the writing.
+
 Zone detection is supplied at runtime; `avatar.json` contains artwork only. A
 minimal text configuration looks like this:
 
