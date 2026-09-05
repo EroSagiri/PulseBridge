@@ -1,0 +1,73 @@
+{
+  "background": "background.png",
+  "foreground": null,
+  "heart_rate": {
+    "layout": "individual",
+    "defaults": {
+      "mode": "sprite",
+      "common": {
+        "region": { "cx": 1000, "cy": 650, "width": 420, "height": 220, "rotation": 0 },
+        "hide_leading_zeroes": true
+      },
+      "sprite": {
+        "spacing": 0,
+        "scale": 0.84,
+        "effects": { "opacity": 0.82, "tint": "#DDE4D7" },
+        "digits": {
+          "0": { "path": "digits-sprite.png", "rect": { "x": 0, "y": 0, "w": 150, "h": 220 } },
+          "1": { "path": "digits-sprite.png", "rect": { "x": 150, "y": 0, "w": 150, "h": 220 } },
+          "2": { "path": "digits-sprite.png", "rect": { "x": 300, "y": 0, "w": 150, "h": 220 } },
+          "3": { "path": "digits-sprite.png", "rect": { "x": 450, "y": 0, "w": 150, "h": 220 } },
+          "4": { "path": "digits-sprite.png", "rect": { "x": 600, "y": 0, "w": 150, "h": 220 } },
+          "5": { "path": "digits-sprite.png", "rect": { "x": 750, "y": 0, "w": 150, "h": 220 } },
+          "6": { "path": "digits-sprite.png", "rect": { "x": 900, "y": 0, "w": 150, "h": 220 } },
+          "7": { "path": "digits-sprite.png", "rect": { "x": 1050, "y": 0, "w": 150, "h": 220 } },
+          "8": { "path": "digits-sprite.png", "rect": { "x": 1200, "y": 0, "w": 150, "h": 220 } },
+          "9": { "path": "digits-sprite.png", "rect": { "x": 1350, "y": 0, "w": 150, "h": 220 } }
+        }
+      },
+      "text": {
+        "font": "/usr/share/fonts/google-noto/NotoSans-SemiBold.ttf",
+        "font_size": 112,
+        "arc": { "curvature": 0.02, "x_scale": 0.96 },
+        "effects": {
+          "fill": "#D8F5FFE0",
+          "highlight": "#FFFFFF9A",
+          "outline": { "color": "#173A66B8", "width": 3 },
+          "glow": { "color": "#73D9FF85", "radius": 10 },
+          "inner_shadow": { "color": "#0B2348A8", "offset_x": 2, "offset_y": 3, "blur": 3 }
+        }
+      }
+    },
+    "positions": {
+      "hundreds": {
+        "common": { "region": { "cx": 845, "cy": 660, "width": 170, "height": 220, "rotation": -4 } }
+      },
+      "tens": {
+        "common": { "region": { "cx": 950, "cy": 632, "width": 170, "height": 220, "rotation": 0 } }
+      },
+      "ones": {
+        "common": { "region": { "cx": 1055, "cy": 660, "width": 170, "height": 220, "rotation": 4 } }
+      }
+    }
+  },
+  "zones": {
+    "z1": { "heart_rate": { "defaults": { "sprite": { "effects": { "opacity": 0.82, "tint": "#E4E1C9" } } } } },
+    "z2": {
+      "background": "background-blush-soft.png",
+      "heart_rate": { "defaults": { "sprite": { "effects": { "opacity": 0.88, "tint": "#E8D9D0" } } } }
+    },
+    "z3": {
+      "background": "background-blush-soft.png",
+      "heart_rate": { "defaults": { "sprite": { "effects": { "opacity": 0.93, "tint": "#E8C4C0" } } } }
+    },
+    "z4": {
+      "background": "background-blush-open.png",
+      "heart_rate": { "defaults": { "sprite": { "effects": { "opacity": 0.97, "tint": "#E9ACA9" } } } }
+    },
+    "z5": {
+      "background": "background-blush-open.png",
+      "heart_rate": { "defaults": { "sprite": { "effects": { "opacity": 1.0, "tint": "#E58F91" } } } }
+    }
+  }
+}
