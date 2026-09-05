@@ -158,7 +158,10 @@ the upload is skipped, but the candidate is recorded as the new comparison
 reference for later jump detection. Avatar logs use `event=avatar_decision` for
 update/skip decisions and `event=avatar_upload` for successful or failed
 requests; they include the candidate, displayed/reference BPM, reason, window
-sample count, and window duration.
+sample count, window duration, and `startup_update_count`. The latter counts
+successful avatar uploads since the current bridge process started; it resets
+to zero after a service restart. Skipped candidates and failed requests do not
+increment it.
 
 The custom online status still updates on each changed state subject to its
 own interval. PulseBridge itself only emits a metric event when the heart-rate

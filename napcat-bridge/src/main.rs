@@ -320,6 +320,7 @@ async fn avatar_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver<
     let mut comparison_bpm = None;
     let mut jump_cooldown_until = None;
     let mut last_non_live_state = None;
+    let mut startup_update_count = 0_u64;
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -372,6 +373,7 @@ async fn avatar_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver<
                                     window_duration_ms,
                                     &mut last_displayed_bpm,
                                     &mut comparison_bpm,
+                                    &mut startup_update_count,
                                 ).await;
                             }
                         }
@@ -385,8 +387,11 @@ async fn avatar_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver<
                         if last_non_live_state != Some(non_live) {
                             last_non_live_state = Some(non_live);
                             match upload_avatar(&renderer, &client, &cfg, non_live).await {
-                                Ok(bytes) => info!(event = "avatar_upload", action = "updated", ?non_live, bytes, "updated QQ avatar"),
-                                Err(error) => warn!(event = "avatar_upload", action = "failed", ?non_live, %error, "QQ avatar update failed"),
+                                Ok(bytes) => {
+                                    startup_update_count += 1;
+                                    info!(event = "avatar_upload", action = "updated", ?non_live, bytes, startup_update_count, "updated QQ avatar");
+                                }
+                                Err(error) => warn!(event = "avatar_upload", action = "failed", ?non_live, %error, startup_update_count, "QQ avatar update failed"),
                             }
                         }
                     }
@@ -398,8 +403,11 @@ async fn avatar_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver<
                     if last_non_live_state != Some(state) {
                         last_non_live_state = Some(state);
                         match upload_avatar(&renderer, &client, &cfg, state).await {
-                            Ok(bytes) => info!(event = "avatar_upload", action = "updated", ?state, bytes, "updated QQ avatar"),
-                            Err(error) => warn!(event = "avatar_upload", action = "failed", ?state, %error, "QQ avatar update failed"),
+                            Ok(bytes) => {
+                                startup_update_count += 1;
+                                info!(event = "avatar_upload", action = "updated", ?state, bytes, startup_update_count, "updated QQ avatar");
+                            }
+                            Err(error) => warn!(event = "avatar_upload", action = "failed", ?state, %error, startup_update_count, "QQ avatar update failed"),
                         }
                     }
                     continue;
@@ -426,6 +434,7 @@ async fn avatar_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver<
                                 window_duration_ms,
                                 &mut last_displayed_bpm,
                                 &mut comparison_bpm,
+                                &mut startup_update_count,
                             ).await;
                         }
                     }
@@ -445,6 +454,7 @@ async fn maybe_update_live_avatar(
     window_duration_ms: u64,
     last_displayed_bpm: &mut Option<u8>,
     comparison_bpm: &mut Option<u8>,
+    startup_update_count: &mut u64,
 ) {
     let State::Live { bpm: candidate_bpm, .. } = state else { return; };
     let displayed_before = *last_displayed_bpm;
@@ -468,6 +478,7 @@ async fn maybe_update_live_avatar(
             display_difference = ?display_difference,
             window_samples,
             window_duration_ms,
+            startup_update_count = *startup_update_count,
             "skipped QQ avatar update because candidate is within display tolerance"
         );
         return;
@@ -484,11 +495,13 @@ async fn maybe_update_live_avatar(
         display_difference = ?display_difference,
         window_samples,
         window_duration_ms,
+        startup_update_count = *startup_update_count,
         "starting QQ avatar update"
     );
     match upload_avatar(renderer, client, cfg, state).await {
         Ok(bytes) => {
             *last_displayed_bpm = Some(candidate_bpm);
+            *startup_update_count += 1;
             info!(
                 event = "avatar_upload",
                 action = "updated",
@@ -497,6 +510,7 @@ async fn maybe_update_live_avatar(
                 bytes,
                 window_samples,
                 window_duration_ms,
+                startup_update_count = *startup_update_count,
                 "updated QQ avatar"
             );
         }
@@ -508,6 +522,7 @@ async fn maybe_update_live_avatar(
             %error,
             window_samples,
             window_duration_ms,
+            startup_update_count = *startup_update_count,
             "QQ avatar update failed"
         ),
     }
