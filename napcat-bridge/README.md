@@ -140,10 +140,21 @@ preview generated with the CLI uses the same artwork that the service will
 upload. For the service, these user/runtime values come from environment
 variables, never from `avatar.json`.
 
-The default minimum interval is zero: every changed state received from
-PulseBridge is sent to NapCat immediately. PulseBridge itself only emits a
-metric event when the heart-rate value changes. The heart icon alternates on
-each update to simulate a beat.
+Avatar updates use a sampling window rather than uploading every changed
+metric. During the day the default window is 10 seconds; during the night it
+is 30 seconds (23:00–07:00 in the machine's local timezone). The avatar uses
+the rounded average BPM in that window, and skips the upload when it equals
+the previous avatar BPM. Each uploaded window starts a new sampling window.
+
+If a newly received BPM differs from the previous uploaded BPM by more than
+10 BPM, the avatar updates immediately using the median of the current
+window. That window is consumed and restarted, and the immediate-jump path
+then enters a 5-second cooldown. The normal day/night window is still allowed
+to complete during that cooldown.
+
+The custom online status still updates on each changed state subject to its
+own interval. PulseBridge itself only emits a metric event when the heart-rate
+value changes. The heart icon alternates on each update to simulate a beat.
 
 QQ profile/nickname changes are rate-limited by default to once per minute.
 Only the newest heart-rate state is considered when that interval expires; a
@@ -170,7 +181,12 @@ Environment variables:
 | `PB_NICKNAME_FORMAT` | `June - 💓{bpm}` |
 | `PB_NICKNAME_IDLE` | `June` |
 | `PB_AVATAR_ENABLED` | `true` |
-| `PB_AVATAR_MIN_INTERVAL_MS` | `1000` |
+| `PB_AVATAR_DAY_INTERVAL_SEC` | `10` |
+| `PB_AVATAR_NIGHT_INTERVAL_SEC` | `30` |
+| `PB_AVATAR_NIGHT_START_HOUR` | `23` |
+| `PB_AVATAR_NIGHT_END_HOUR` | `7` |
+| `PB_AVATAR_JUMP_THRESHOLD_BPM` | `10` (strictly greater than) |
+| `PB_AVATAR_JUMP_COOLDOWN_SEC` | `5` |
 | `PB_AVATAR_SIZE` | `320` |
 | `PB_AVATAR_JPEG_QUALITY` | `50` |
 | `PB_AVATAR_MAX_BYTES` | unset; e.g. `10k` |

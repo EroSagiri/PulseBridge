@@ -15,6 +15,7 @@ path = "src/bin/pulsebridge-avatar.rs"
 ab_glyph = "0.2"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", default-features = true }
 cosmic-text = "0.13"
 fontdue = "0.9"
 futures-util = "0.3"

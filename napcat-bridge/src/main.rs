@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use chrono::{Local, Timelike};
 use futures_util::StreamExt;
 use pulsebridge_api::{DeviceSnapshot, Metric, MetricEvent, Presence, ServerMessage};
 use reqwest::Client;
@@ -23,7 +24,12 @@ const IDLE_RETRY: Duration = Duration::from_secs(10);
 const WS_RECONNECT_INITIAL: Duration = Duration::from_secs(1);
 const WS_RECONNECT_MAX: Duration = Duration::from_secs(30);
 const WS_STABLE_AFTER: Duration = Duration::from_secs(30);
-const DEFAULT_AVATAR_MIN_INTERVAL_MS: u64 = 2_000;
+const DEFAULT_AVATAR_DAY_INTERVAL_SEC: u64 = 10;
+const DEFAULT_AVATAR_NIGHT_INTERVAL_SEC: u64 = 30;
+const DEFAULT_AVATAR_NIGHT_START_HOUR: u64 = 23;
+const DEFAULT_AVATAR_NIGHT_END_HOUR: u64 = 7;
+const DEFAULT_AVATAR_JUMP_THRESHOLD_BPM: u64 = 10;
+const DEFAULT_AVATAR_JUMP_COOLDOWN_SEC: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -128,7 +134,12 @@ struct Config {
     face_id: u64,
     face_type: u64,
     avatar_enabled: bool,
-    avatar_min_interval: Duration,
+    avatar_day_interval: Duration,
+    avatar_night_interval: Duration,
+    avatar_night_start_hour: u8,
+    avatar_night_end_hour: u8,
+    avatar_jump_threshold_bpm: u8,
+    avatar_jump_cooldown: Duration,
 }
 
 impl Config {
@@ -153,8 +164,88 @@ fn env_u64(key: &str, default: u64) -> Result<u64, String> {
     std::env::var(key).map_or(Ok(default), |v| v.parse().map_err(|_| format!("{key} must be an integer")))
 }
 
+fn env_positive_duration(key: &str, default: u64) -> Result<Duration, String> {
+    let value = env_u64(key, default)?;
+    if value == 0 {
+        return Err(format!("{key} must be greater than zero"));
+    }
+    Ok(Duration::from_secs(value))
+}
+
+fn env_hour(key: &str, default: u64) -> Result<u8, String> {
+    let value = env_u64(key, default)?;
+    if value > 23 {
+        return Err(format!("{key} must be between 0 and 23"));
+    }
+    Ok(value as u8)
+}
+
 fn env_device_id() -> Result<Option<u32>, String> {
     std::env::var("PB_DEVICE_ID").map_or(Ok(None), |v| v.parse().map(Some).map_err(|_| "PB_DEVICE_ID must be a u32".into()))
+}
+
+fn is_night_hour(hour: u8, start: u8, end: u8) -> bool {
+    if start == end {
+        return false;
+    }
+    if start < end {
+        (start..end).contains(&hour)
+    } else {
+        hour >= start || hour < end
+    }
+}
+
+fn avatar_is_night(cfg: &Config) -> bool {
+    is_night_hour(
+        Local::now().hour() as u8,
+        cfg.avatar_night_start_hour,
+        cfg.avatar_night_end_hour,
+    )
+}
+
+fn avatar_window_interval(cfg: &Config) -> Duration {
+    if avatar_is_night(cfg) {
+        cfg.avatar_night_interval
+    } else {
+        cfg.avatar_day_interval
+    }
+}
+
+struct HeartRateWindow {
+    started_at: Instant,
+    samples: Vec<u8>,
+}
+
+impl HeartRateWindow {
+    fn new(now: Instant) -> Self {
+        Self { started_at: now, samples: Vec::new() }
+    }
+
+    fn push(&mut self, bpm: u8) {
+        self.samples.push(bpm);
+    }
+
+    fn average(&self) -> Option<u8> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let sum: u32 = self.samples.iter().map(|sample| u32::from(*sample)).sum();
+        Some(((sum + self.samples.len() as u32 / 2) / self.samples.len() as u32) as u8)
+    }
+
+    fn median(&self) -> Option<u8> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let mut sorted = self.samples.clone();
+        sorted.sort_unstable();
+        let middle = sorted.len() / 2;
+        if sorted.len() % 2 == 1 {
+            Some(sorted[middle])
+        } else {
+            Some(((u16::from(sorted[middle - 1]) + u16::from(sorted[middle]) + 1) / 2) as u8)
+        }
+    }
 }
 
 #[tokio::main]
@@ -179,7 +270,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         face_id: env_u64("NAPCAT_FACE_ID", 0)?,
         face_type: env_u64("NAPCAT_FACE_TYPE", 1)?,
         avatar_enabled: env_or("PB_AVATAR_ENABLED", "true").parse().map_err(|_| "PB_AVATAR_ENABLED must be true or false")?,
-        avatar_min_interval: Duration::from_millis(env_u64("PB_AVATAR_MIN_INTERVAL_MS", DEFAULT_AVATAR_MIN_INTERVAL_MS)?),
+        avatar_day_interval: env_positive_duration("PB_AVATAR_DAY_INTERVAL_SEC", DEFAULT_AVATAR_DAY_INTERVAL_SEC)?,
+        avatar_night_interval: env_positive_duration("PB_AVATAR_NIGHT_INTERVAL_SEC", DEFAULT_AVATAR_NIGHT_INTERVAL_SEC)?,
+        avatar_night_start_hour: env_hour("PB_AVATAR_NIGHT_START_HOUR", DEFAULT_AVATAR_NIGHT_START_HOUR)?,
+        avatar_night_end_hour: env_hour("PB_AVATAR_NIGHT_END_HOUR", DEFAULT_AVATAR_NIGHT_END_HOUR)?,
+        avatar_jump_threshold_bpm: env_u64("PB_AVATAR_JUMP_THRESHOLD_BPM", DEFAULT_AVATAR_JUMP_THRESHOLD_BPM)?
+            .try_into()
+            .map_err(|_| "PB_AVATAR_JUMP_THRESHOLD_BPM must be between 0 and 255".to_string())?,
+        avatar_jump_cooldown: env_positive_duration("PB_AVATAR_JUMP_COOLDOWN_SEC", DEFAULT_AVATAR_JUMP_COOLDOWN_SEC)?,
     };
     let device_id = env_device_id()?;
 
@@ -216,33 +314,110 @@ async fn avatar_loop(client: Client, cfg: Config, mut state_rx: watch::Receiver<
         }
     };
     let mut state = *state_rx.borrow_and_update();
-    let mut last_state = None;
-    let mut last_attempt = Instant::now().checked_sub(cfg.avatar_min_interval).unwrap_or_else(Instant::now);
+    let mut live_device_id = None;
+    let mut window = None;
+    let mut last_published_bpm = None;
+    let mut jump_cooldown_until = None;
+    let mut last_non_live_state = None;
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
-            changed = state_rx.changed() => { if changed.is_err() { return Ok(()); } state = *state_rx.borrow_and_update(); },
+            changed = state_rx.changed() => {
+                if changed.is_err() { return Ok(()); }
+                state = *state_rx.borrow_and_update();
+                match state {
+                    State::Live { device_id, bpm } => {
+                        let now = Instant::now();
+                        if live_device_id != Some(device_id) {
+                            live_device_id = Some(device_id);
+                            window = None;
+                            last_published_bpm = None;
+                            jump_cooldown_until = None;
+                        }
+                        window.get_or_insert_with(|| HeartRateWindow::new(now)).push(bpm);
+                        last_non_live_state = None;
+
+                        let jump_allowed = jump_cooldown_until.is_none_or(|until| now >= until);
+                        let jumped = last_published_bpm.is_some_and(|last| bpm.abs_diff(last) > cfg.avatar_jump_threshold_bpm);
+                        if jump_allowed && jumped {
+                            let median = window.take().and_then(|samples| samples.median());
+                            jump_cooldown_until = Some(now + cfg.avatar_jump_cooldown);
+                            if let Some(median) = median {
+                                if last_published_bpm != Some(median) {
+                                    last_published_bpm = Some(median);
+                                    match upload_avatar(&renderer, &client, &cfg, State::Live { device_id, bpm: median }).await {
+                                        Ok(bytes) => info!(bpm = median, bytes, reason = "jump_median", "updated QQ avatar"),
+                                        Err(error) => warn!(bpm = median, %error, reason = "jump_median", "QQ avatar update failed"),
+                                    }
+                                } else {
+                                    debug!(bpm = median, reason = "jump_median", "skipped QQ avatar update because heart rate is unchanged");
+                                }
+                            }
+                        }
+                    }
+                    non_live => {
+                        live_device_id = None;
+                        window = None;
+                        last_published_bpm = None;
+                        jump_cooldown_until = None;
+                        if last_non_live_state != Some(non_live) {
+                            last_non_live_state = Some(non_live);
+                            match upload_avatar(&renderer, &client, &cfg, non_live).await {
+                                Ok(bytes) => info!(?non_live, bytes, "updated QQ avatar"),
+                                Err(error) => warn!(?non_live, %error, "QQ avatar update failed"),
+                            }
+                        }
+                    }
+                }
+            },
             _ = ticker.tick() => {
                 let now = Instant::now();
-                if last_state == Some(state) || now.duration_since(last_attempt) < cfg.avatar_min_interval { continue; }
-                last_state = Some(state);
-                last_attempt = now;
-                let rendered = match state {
-                    State::Live { bpm, .. } => renderer.render(bpm).await,
-                    State::NoData { .. } => renderer.render_no_data().await,
-                    State::Offline { .. } | State::Waiting => renderer.render_offline().await,
-                };
-                match rendered {
-                    Ok(bytes) => match set_avatar(&client, &cfg, &bytes).await {
-                        Ok(()) => info!(?state, bytes = bytes.len(), "updated QQ avatar"),
-                        Err(error) => warn!(?state, %error, "QQ avatar update failed; newer state will supersede it"),
-                    },
-                    Err(error) => warn!(?state, %error, "heart-rate avatar render failed"),
+                if !matches!(state, State::Live { .. }) {
+                    if last_non_live_state != Some(state) {
+                        last_non_live_state = Some(state);
+                        match upload_avatar(&renderer, &client, &cfg, state).await {
+                            Ok(bytes) => info!(?state, bytes, "updated QQ avatar"),
+                            Err(error) => warn!(?state, %error, "QQ avatar update failed"),
+                        }
+                    }
+                    continue;
+                }
+
+                if let Some(samples) = window.as_ref() {
+                    if now.duration_since(samples.started_at) >= avatar_window_interval(&cfg) {
+                        let average = window.take().and_then(|samples| samples.average());
+                        if let (Some(average), State::Live { device_id, .. }) = (average, state) {
+                            if last_published_bpm != Some(average) {
+                                last_published_bpm = Some(average);
+                                match upload_avatar(&renderer, &client, &cfg, State::Live { device_id, bpm: average }).await {
+                                    Ok(bytes) => info!(bpm = average, bytes, reason = "window_average", "updated QQ avatar"),
+                                    Err(error) => warn!(bpm = average, %error, reason = "window_average", "QQ avatar update failed"),
+                                }
+                            } else {
+                                debug!(bpm = average, reason = "window_average", "skipped QQ avatar update because heart rate is unchanged");
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+async fn upload_avatar(
+    renderer: &avatar::AvatarRenderer,
+    client: &Client,
+    cfg: &Config,
+    state: State,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let bytes = match state {
+        State::Live { bpm, .. } => renderer.render(bpm).await?,
+        State::NoData { .. } => renderer.render_no_data().await?,
+        State::Offline { .. } | State::Waiting => renderer.render_offline().await?,
+    };
+    set_avatar(client, cfg, &bytes).await?;
+    Ok(bytes.len())
 }
 
 async fn source_loop(server_ws: String, device_id: Option<u32>, state_tx: watch::Sender<State>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -408,5 +583,34 @@ async fn set_avatar(client: &Client, cfg: &Config, bytes: &[u8]) -> Result<(), B
     use base64::{engine::general_purpose::STANDARD, Engine};
     napcat_post(client, cfg, "set_qq_avatar", json!({
         "file": format!("base64://{}", STANDARD.encode(bytes)),
-    })).await.map(|_| ())
+})).await.map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_calculates_rounded_average_and_median() {
+        let mut window = HeartRateWindow::new(Instant::now());
+        for bpm in [60, 61, 80] {
+            window.push(bpm);
+        }
+        assert_eq!(window.average(), Some(67));
+        assert_eq!(window.median(), Some(61));
+
+        let mut even_window = HeartRateWindow::new(Instant::now());
+        even_window.push(60);
+        even_window.push(61);
+        assert_eq!(even_window.median(), Some(61));
+    }
+
+    #[test]
+    fn night_window_supports_midnight_wrap() {
+        assert!(is_night_hour(23, 23, 7));
+        assert!(is_night_hour(0, 23, 7));
+        assert!(is_night_hour(6, 23, 7));
+        assert!(!is_night_hour(7, 23, 7));
+        assert!(!is_night_hour(12, 23, 7));
+    }
 }
