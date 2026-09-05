@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs, path::{Path, PathBuf}, sync::{Arc, OnceLock}, thread};
 
-use ab_glyph::FontArc;
+use ab_glyph::{Font, FontArc};
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use image::{codecs::jpeg::JpegEncoder, imageops, DynamicImage, GenericImageView, Rgba, RgbaImage};
 use imageproc::drawing::draw_text_mut;
@@ -140,6 +140,8 @@ struct CommonConfig {
 #[serde(deny_unknown_fields)]
 struct TextConfig {
     font: PathBuf,
+    #[serde(default)]
+    fallback_fonts: Vec<PathBuf>,
     font_size: f32,
     #[serde(default)]
     line_height: Option<f32>,
@@ -253,6 +255,7 @@ struct CommonOverride {
 #[serde(deny_unknown_fields)]
 struct TextOverride {
     font: Option<PathBuf>,
+    fallback_fonts: Option<Vec<PathBuf>>,
     font_size: Option<f32>,
     line_height: Option<f32>,
     align: Option<TextAlign>,
@@ -620,6 +623,7 @@ struct ResolvedCommon {
 #[derive(Clone)]
 struct ResolvedText {
     font: PathBuf,
+    fallback_fonts: Vec<PathBuf>,
     font_size: f32,
     line_height: f32,
     align: TextAlign,
@@ -785,6 +789,7 @@ struct DisplayRenderer {
 
 struct TextRenderer {
     font: FontArc,
+    fallback_fonts: Vec<FontArc>,
     font_size: f32,
     line_height: f32,
     align: TextAlign,
@@ -1047,14 +1052,35 @@ impl TextRenderer {
         buffer.set_size(Some(MASTER_SIZE as f32), Some(MASTER_SIZE as f32));
         buffer.set_text("000", Attrs::new(), Shaping::Advanced);
         buffer.shape_until_scroll(true);
+        let fallback_fonts = config
+            .fallback_fonts
+            .iter()
+            .map(|path| {
+                let bytes = fs::read(path)
+                    .map_err(|error| format!("cannot read fallback font {}: {error}", path.display()))?;
+                FontArc::try_from_vec(bytes)
+                    .map_err(|_| format!("cannot parse fallback font {}", path.display()))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
             font,
+            fallback_fonts,
             font_size: config.font_size * coordinate_scale,
             line_height: config.line_height * coordinate_scale,
             align: config.align,
             arc: config.arc,
             style: config.style,
         })
+    }
+
+    fn font_for_text(&self, text: &str) -> &FontArc {
+        if text.chars().all(|character| self.font.glyph_id(character).0 != 0) {
+            return &self.font;
+        }
+        self.fallback_fonts
+            .iter()
+            .find(|font| text.chars().all(|character| font.glyph_id(character).0 != 0))
+            .unwrap_or(&self.font)
     }
 }
 
@@ -1235,7 +1261,8 @@ fn render_text_line(text_renderer: &TextRenderer, text: &str, region_width: u32,
     let advances: Vec<f32> = characters
         .iter()
         .map(|character| {
-            let (width, _) = imageproc::drawing::text_size(scale, &text_renderer.font, character);
+            let font = text_renderer.font_for_text(character);
+            let (width, _) = imageproc::drawing::text_size(scale, font, character);
             width as f32 * text_renderer.arc.x_scale
         })
         .collect();
@@ -1296,7 +1323,8 @@ fn render_text_glyph(
     region_height: u32,
     scale: f32,
 ) -> Result<RgbaImage, String> {
-    let (text_width, text_height) = imageproc::drawing::text_size(scale, &text_renderer.font, text);
+    let font = text_renderer.font_for_text(text);
+    let (text_width, text_height) = imageproc::drawing::text_size(scale, font, text);
     let padding = text_renderer
         .style
         .outline_width
@@ -1308,7 +1336,7 @@ fn render_text_glyph(
     let mut layer = RgbaImage::new(width, region_height.max(1));
 
     let mut glow = RgbaImage::new(width, region_height.max(1));
-    draw_text_mut(&mut glow, text_renderer.style.glow.color, x, y, scale, &text_renderer.font, text);
+    draw_text_mut(&mut glow, text_renderer.style.glow.color, x, y, scale, font, text);
     if text_renderer.style.glow.radius > 0 {
         glow = imageops::blur(&glow, text_renderer.style.glow.radius as f32);
     }
@@ -1324,16 +1352,16 @@ fn render_text_glyph(
                     x + dx,
                     y + dy,
                     scale,
-                    &text_renderer.font,
+                    font,
                     text,
                 );
             }
         }
     }
-    draw_text_mut(&mut layer, text_renderer.style.fill, x, y, scale, &text_renderer.font, text);
+    draw_text_mut(&mut layer, text_renderer.style.fill, x, y, scale, font, text);
 
     let mut mask = RgbaImage::new(width, region_height.max(1));
-    draw_text_mut(&mut mask, Rgba([255, 255, 255, 255]), x, y, scale, &text_renderer.font, text);
+    draw_text_mut(&mut mask, Rgba([255, 255, 255, 255]), x, y, scale, font, text);
 
     let shadow = &text_renderer.style.inner_shadow;
     let mut inner_shadow = RgbaImage::new(width, region_height.max(1));
@@ -1343,7 +1371,7 @@ fn render_text_glyph(
         x + shadow.offset_x,
         y + shadow.offset_y,
         scale,
-        &text_renderer.font,
+        font,
         text,
     );
     if shadow.blur > 0 {
@@ -1355,7 +1383,7 @@ fn render_text_glyph(
     imageops::overlay(&mut layer, &inner_shadow, 0, 0);
 
     let mut highlight = RgbaImage::new(width, region_height.max(1));
-    draw_text_mut(&mut highlight, text_renderer.style.highlight, x - 1, y - 1, scale, &text_renderer.font, text);
+    draw_text_mut(&mut highlight, text_renderer.style.highlight, x - 1, y - 1, scale, font, text);
     for (highlight_pixel, mask_pixel) in highlight.pixels_mut().zip(mask.pixels()) {
         highlight_pixel.0[3] = highlight_pixel.0[3].min(mask_pixel.0[3]);
     }
@@ -1914,6 +1942,7 @@ fn resolve_text(base: &Path, config: &TextConfig) -> Result<ResolvedText, String
     validate_line_height(line_height)?;
     Ok(ResolvedText {
         font: resolve_path(base, &config.font),
+        fallback_fonts: config.fallback_fonts.iter().map(|font| resolve_path(base, font)).collect(),
         font_size: config.font_size,
         line_height,
         align: config.align,
@@ -1936,12 +1965,23 @@ fn resolve_text_from_override(base: &Path, overlay: &TextOverride) -> Result<Res
     };
     validate_arc(&arc)?;
     validate_font_size(font_size)?;
-    Ok(ResolvedText { font: resolve_path(base, font), font_size, line_height, align: overlay.align.unwrap_or_default(), arc, style })
+    Ok(ResolvedText {
+        font: resolve_path(base, font),
+        fallback_fonts: overlay.fallback_fonts.as_ref().map(|fonts| fonts.iter().map(|font| resolve_path(base, font)).collect()).unwrap_or_default(),
+        font_size,
+        line_height,
+        align: overlay.align.unwrap_or_default(),
+        arc,
+        style,
+    })
 }
 
 fn apply_text_override(base: &Path, text: &mut ResolvedText, overlay: &TextOverride) -> Result<(), String> {
     if let Some(font) = &overlay.font {
         text.font = resolve_path(base, font);
+    }
+    if let Some(fallback_fonts) = &overlay.fallback_fonts {
+        text.fallback_fonts = fallback_fonts.iter().map(|font| resolve_path(base, font)).collect();
     }
     if let Some(font_size) = overlay.font_size {
         validate_font_size(font_size)?;

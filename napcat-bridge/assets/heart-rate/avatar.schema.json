@@ -115,6 +115,10 @@
       "required": ["font", "font_size", "arc", "effects"],
       "properties": {
         "font": { "type": "string", "minLength": 1 },
+        "fallback_fonts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "font_size": { "type": "number", "exclusiveMinimum": 0 },
         "line_height": { "type": "number", "exclusiveMinimum": 0 },
         "align": { "type": "string", "enum": ["left", "center", "right"], "default": "center" },
@@ -194,6 +198,10 @@
       "additionalProperties": false,
       "properties": {
         "font": { "type": "string", "minLength": 1 },
+        "fallback_fonts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "font_size": { "type": "number", "exclusiveMinimum": 0 },
         "line_height": { "type": "number", "exclusiveMinimum": 0 },
         "align": { "type": "string", "enum": ["left", "center", "right"] },
