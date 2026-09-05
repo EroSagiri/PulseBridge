@@ -124,6 +124,14 @@ Zone overrides can replace `texts` and `variables` under their existing
 `heart_rate` override. Full conditional overrides for background and
 foreground are planned for the next migration step.
 
+Text templates may contain an explicit `\\n` line break. The text renderer
+supports one to three lines, centers the complete block vertically in its
+region, and centers each line horizontally by default. Set `text.align` to
+`left` or `right` when needed, and set `text.line_height` in source-image
+pixels; when omitted it defaults to `font_size * 1.15`. Each line receives the
+same fill, highlight, outline, glow, and inner-shadow effects, and the whole
+multiline layer is rotated only after all lines have been composed.
+
 `foreground` is optional. A Zone can replace it with another image, adjust its
 position, or disable it explicitly with `"foreground": null`:
 

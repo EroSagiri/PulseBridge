@@ -141,8 +141,21 @@ struct CommonConfig {
 struct TextConfig {
     font: PathBuf,
     font_size: f32,
+    #[serde(default)]
+    line_height: Option<f32>,
+    #[serde(default)]
+    align: TextAlign,
     arc: ArcConfig,
     effects: EffectsConfig,
+}
+
+#[derive(Clone, Copy, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum TextAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
 }
 
 #[derive(Clone, Deserialize)]
@@ -241,6 +254,8 @@ struct CommonOverride {
 struct TextOverride {
     font: Option<PathBuf>,
     font_size: Option<f32>,
+    line_height: Option<f32>,
+    align: Option<TextAlign>,
     arc: Option<ArcOverride>,
     effects: Option<EffectsOverride>,
 }
@@ -606,6 +621,8 @@ struct ResolvedCommon {
 struct ResolvedText {
     font: PathBuf,
     font_size: f32,
+    line_height: f32,
+    align: TextAlign,
     arc: ArcConfig,
     style: AvatarStyle,
 }
@@ -769,6 +786,8 @@ struct DisplayRenderer {
 struct TextRenderer {
     font: FontArc,
     font_size: f32,
+    line_height: f32,
+    align: TextAlign,
     arc: ArcConfig,
     style: AvatarStyle,
 }
@@ -1027,6 +1046,8 @@ impl TextRenderer {
         Ok(Self {
             font,
             font_size: config.font_size * coordinate_scale,
+            line_height: config.line_height * coordinate_scale,
+            align: config.align,
             arc: config.arc,
             style: config.style,
         })
@@ -1172,6 +1193,39 @@ impl Renderer {
 fn render_text_layer(display: &DisplayRenderer, text_renderer: &TextRenderer, text: &str) -> Result<RgbaImage, String> {
     let region_width = display.common.region.width.round().max(1.0) as u32;
     let region_height = display.common.region.height.round().max(1.0) as u32;
+    let lines = text.split('\n').collect::<Vec<_>>();
+    if !(1..=3).contains(&lines.len()) {
+        return Err(format!("avatar text supports 1 to 3 lines, got {}", lines.len()));
+    }
+    let line_height = text_renderer.line_height.round().max(1.0) as u32;
+    let block_height = line_height
+        .checked_mul(lines.len() as u32)
+        .ok_or("avatar text block is too tall")?;
+    if block_height > region_height {
+        return Err(format!(
+            "avatar text block height {block_height} exceeds region height {region_height}"
+        ));
+    }
+    let block_top = (region_height - block_height) / 2;
+    let mut layer = RgbaImage::new(region_width, region_height);
+    for (index, line) in lines.iter().enumerate() {
+        let line_layer = render_text_line(text_renderer, line, region_width, line_height)?;
+        imageops::overlay(&mut layer, &line_layer, 0, i64::from(block_top + index as u32 * line_height));
+    }
+
+    if display.common.region.rotation.abs() > f32::EPSILON {
+        Ok(rotate_about_center(
+            &layer,
+            display.common.region.rotation.to_radians(),
+            Interpolation::Bilinear,
+            Border::Constant(Rgba([0, 0, 0, 0])),
+        ))
+    } else {
+        Ok(layer)
+    }
+}
+
+fn render_text_line(text_renderer: &TextRenderer, text: &str, region_width: u32, region_height: u32) -> Result<RgbaImage, String> {
     let scale = text_renderer.font_size;
     let characters: Vec<String> = text.chars().map(|character| character.to_string()).collect();
     let advances: Vec<f32> = characters
@@ -1182,7 +1236,11 @@ fn render_text_layer(display: &DisplayRenderer, text_renderer: &TextRenderer, te
         })
         .collect();
     let total_width: f32 = advances.iter().sum();
-    let mut cursor = (region_width as f32 - total_width) / 2.0;
+    let mut cursor = match text_renderer.align {
+        TextAlign::Left => 0.0,
+        TextAlign::Center => (region_width as f32 - total_width) / 2.0,
+        TextAlign::Right => region_width as f32 - total_width,
+    };
     let mut layer = RgbaImage::new(region_width, region_height);
 
     for (character, advance) in characters.iter().zip(advances.iter()) {
@@ -1225,16 +1283,7 @@ fn render_text_layer(display: &DisplayRenderer, text_renderer: &TextRenderer, te
         cursor += advance;
     }
 
-    if display.common.region.rotation.abs() > f32::EPSILON {
-        Ok(rotate_about_center(
-            &layer,
-            display.common.region.rotation.to_radians(),
-            Interpolation::Bilinear,
-            Border::Constant(Rgba([0, 0, 0, 0])),
-        ))
-    } else {
-        Ok(layer)
-    }
+    Ok(layer)
 }
 
 fn render_text_glyph(
@@ -1857,9 +1906,13 @@ fn apply_common_override(common: &mut ResolvedCommon, overlay: &CommonOverride) 
 fn resolve_text(base: &Path, config: &TextConfig) -> Result<ResolvedText, String> {
     validate_arc(&config.arc)?;
     validate_font_size(config.font_size)?;
+    let line_height = config.line_height.unwrap_or(config.font_size * 1.15);
+    validate_line_height(line_height)?;
     Ok(ResolvedText {
         font: resolve_path(base, &config.font),
         font_size: config.font_size,
+        line_height,
+        align: config.align,
         arc: config.arc.clone(),
         style: style_from_config(&config.effects)?,
     })
@@ -1868,6 +1921,8 @@ fn resolve_text(base: &Path, config: &TextConfig) -> Result<ResolvedText, String
 fn resolve_text_from_override(base: &Path, overlay: &TextOverride) -> Result<ResolvedText, String> {
     let font = overlay.font.as_ref().ok_or("text override requires font when no base text configuration exists")?;
     let font_size = overlay.font_size.ok_or("text override requires font_size when no base text configuration exists")?;
+    let line_height = overlay.line_height.unwrap_or(font_size * 1.15);
+    validate_line_height(line_height)?;
     let arc = overlay.arc.as_ref().ok_or("text override requires arc when no base text configuration exists")?;
     let effects = overlay.effects.as_ref().ok_or("text override requires effects when no base text configuration exists")?;
     let style = style_from_override(effects)?;
@@ -1877,7 +1932,7 @@ fn resolve_text_from_override(base: &Path, overlay: &TextOverride) -> Result<Res
     };
     validate_arc(&arc)?;
     validate_font_size(font_size)?;
-    Ok(ResolvedText { font: resolve_path(base, font), font_size, arc, style })
+    Ok(ResolvedText { font: resolve_path(base, font), font_size, line_height, align: overlay.align.unwrap_or_default(), arc, style })
 }
 
 fn apply_text_override(base: &Path, text: &mut ResolvedText, overlay: &TextOverride) -> Result<(), String> {
@@ -1887,6 +1942,16 @@ fn apply_text_override(base: &Path, text: &mut ResolvedText, overlay: &TextOverr
     if let Some(font_size) = overlay.font_size {
         validate_font_size(font_size)?;
         text.font_size = font_size;
+        if overlay.line_height.is_none() {
+            text.line_height = font_size * 1.15;
+        }
+    }
+    if let Some(line_height) = overlay.line_height {
+        validate_line_height(line_height)?;
+        text.line_height = line_height;
+    }
+    if let Some(align) = overlay.align {
+        text.align = align;
     }
     if let Some(arc) = &overlay.arc {
         apply_arc_override(&mut text.arc, arc)?;
@@ -2121,6 +2186,13 @@ fn apply_arc_override(arc: &mut ArcConfig, overlay: &ArcOverride) -> Result<(), 
 fn validate_font_size(font_size: f32) -> Result<(), String> {
     if font_size <= 0.0 {
         return Err("avatar font_size must be positive".into());
+    }
+    Ok(())
+}
+
+fn validate_line_height(line_height: f32) -> Result<(), String> {
+    if line_height <= 0.0 {
+        return Err("avatar line_height must be positive".into());
     }
     Ok(())
 }

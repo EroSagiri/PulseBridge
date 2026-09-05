@@ -116,6 +116,8 @@
       "properties": {
         "font": { "type": "string", "minLength": 1 },
         "font_size": { "type": "number", "exclusiveMinimum": 0 },
+        "line_height": { "type": "number", "exclusiveMinimum": 0 },
+        "align": { "type": "string", "enum": ["left", "center", "right"], "default": "center" },
         "arc": { "$ref": "#/$defs/arc" },
         "effects": { "$ref": "#/$defs/effects" }
       }
@@ -193,6 +195,8 @@
       "properties": {
         "font": { "type": "string", "minLength": 1 },
         "font_size": { "type": "number", "exclusiveMinimum": 0 },
+        "line_height": { "type": "number", "exclusiveMinimum": 0 },
+        "align": { "type": "string", "enum": ["left", "center", "right"] },
         "arc": { "$ref": "#/$defs/arc_override" },
         "effects": { "$ref": "#/$defs/effects_override" }
       }
