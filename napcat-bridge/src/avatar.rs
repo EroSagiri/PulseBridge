@@ -921,31 +921,35 @@ impl HeartRateRenderer {
     }
 
     fn render(&self, image: &mut RgbaImage, label: &str, bpm: Option<u16>, zone: ZoneId) -> Result<(), String> {
-        match self.layout {
-            HeartRateLayout::Combined => self.render_display(image, &self.defaults, label),
-            HeartRateLayout::Individual => {
-                let digits: Vec<char> = label.chars().filter(|character| character.is_ascii_digit()).collect();
-                if digits.is_empty() {
-                    self.render_display(image, &self.defaults, label)?;
-                    return self.render_text_objects(image, bpm, zone);
+        // New text objects own the heart-rate layer. This prevents legacy
+        // defaults/positions from being drawn underneath them, especially
+        // when a zone override changes an otherwise-hidden sprite opacity.
+        if self.texts.is_empty() {
+            match self.layout {
+                HeartRateLayout::Combined => self.render_display(image, &self.defaults, label)?,
+                HeartRateLayout::Individual => {
+                    let digits: Vec<char> = label.chars().filter(|character| character.is_ascii_digit()).collect();
+                    if digits.is_empty() {
+                        self.render_display(image, &self.defaults, label)?;
+                    } else {
+                        let digits = if self.defaults.common.hide_leading_zeroes {
+                            digits
+                                .iter()
+                                .skip_while(|character| **character == '0')
+                                .copied()
+                                .collect::<Vec<_>>()
+                        } else {
+                            digits
+                        };
+                        let digits = if digits.is_empty() { vec!['0'] } else { digits };
+                        let start = 3usize.saturating_sub(digits.len());
+                        for (slot, character) in self.positions.iter().skip(start).zip(digits.iter()) {
+                            self.render_display(image, slot, &character.to_string())?;
+                        }
+                    }
                 }
-                let digits = if self.defaults.common.hide_leading_zeroes {
-                    digits
-                        .iter()
-                        .skip_while(|character| **character == '0')
-                        .copied()
-                        .collect::<Vec<_>>()
-                } else {
-                    digits
-                };
-                let digits = if digits.is_empty() { vec!['0'] } else { digits };
-                let start = 3usize.saturating_sub(digits.len());
-                for (slot, character) in self.positions.iter().skip(start).zip(digits.iter()) {
-                    self.render_display(image, slot, &character.to_string())?;
-                }
-                Ok(())
             }
-        }?;
+        }
         self.render_text_objects(image, bpm, zone)
     }
 
