@@ -15,6 +15,9 @@ const DEFAULT_OSC_ADDR: &str = "127.0.0.1:9000";
 const DEFAULT_MIN_INTERVAL_MS: u64 = 1_100;
 const DEFAULT_REFRESH_MS: u64 = 5_000;
 const DEFAULT_TEXT_FORMAT: &str = "♥ {} BPM";
+const WS_RECONNECT_INITIAL: Duration = Duration::from_secs(1);
+const WS_RECONNECT_MAX: Duration = Duration::from_secs(30);
+const WS_STABLE_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Alignment {
@@ -305,12 +308,12 @@ async fn source_loop(
     device_id: Option<u32>,
     state_tx: watch::Sender<DisplayState>,
 ) {
-    let mut retry_secs = 1u64;
+    let mut retry_delay = WS_RECONNECT_INITIAL;
     loop {
         match connect_async(&server_ws).await {
             Ok((stream, _)) => {
                 info!(%server_ws, "connected to PulseBridge WebSocket");
-                retry_secs = 1;
+                let connected_at = Instant::now();
                 let mut selector = DeviceSelector::new(device_id);
                 let (_, mut incoming) = stream.split();
 
@@ -344,14 +347,18 @@ async fn source_loop(
                         }
                     }
                 }
+                if connected_at.elapsed() >= WS_STABLE_AFTER {
+                    retry_delay = WS_RECONNECT_INITIAL;
+                }
                 warn!(%server_ws, "PulseBridge WebSocket disconnected");
             }
             Err(error) => warn!(%server_ws, %error, "cannot connect to PulseBridge WebSocket"),
         }
 
         state_tx.send_replace(DisplayState::NoSignal { device_id });
-        tokio::time::sleep(Duration::from_secs(retry_secs)).await;
-        retry_secs = (retry_secs * 2).min(10);
+        info!(delay = ?retry_delay, "PulseBridge WebSocket reconnect scheduled");
+        tokio::time::sleep(retry_delay).await;
+        retry_delay = (retry_delay * 2).min(WS_RECONNECT_MAX);
     }
 }
 
